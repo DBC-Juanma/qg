@@ -534,10 +534,9 @@ def verdict_of(state: RunState, request: Request) -> tuple[str, list[str]]:
     that left QA out (`qa_left_out`) is judged on the stages it ran: it can be READY for them,
     its warnings say so, and `qg check` still judges it under the whole policy.
     """
-    cfg = config.parse(request.config, f"request of run {state.id}")
     if state.status not in ("passed", "failed"):
         return NOT_READY, [f"run {state.status}" + (f": {state.error}" if state.error else "")]
-    policy = cfg.policy(state.env)
+    policy = config.stored_policy(request.config, state.env, f"request of run {state.id}")
     if state.mode == "nightly":
         policy = Policy(tuple(state.stage_set), policy.max_p0, policy.p1_acknowledged)
     elif qa_left_out(state, policy):

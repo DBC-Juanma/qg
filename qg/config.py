@@ -785,6 +785,18 @@ def _policy(reader: Reader, env: str, raw: Any) -> Policy:
     )
 
 
+def stored_policy(raw: Any, env: str, source: str) -> Policy:
+    """Returns the policy of `env` from a stored configuration, reading only its deploy section;
+    the rest of an old run's configuration is not checked against today's schema."""
+    reader = Reader(source)
+    if not isinstance(raw, dict) or "deploy" not in raw:
+        reader.fail("<root>", "expected a mapping with a deploy section")
+    deploy = reader.mapping(raw["deploy"], "deploy", optional=ENVS)
+    if env not in deploy:
+        die(f"{source}: deploy.{env} is not defined")
+    return _policy(reader, env, deploy[env])
+
+
 def parse(raw: Any, source: str) -> Config:
     """Validates a loaded verify.yml and returns its Config; `source` names it in errors."""
     reader = Reader(source)
