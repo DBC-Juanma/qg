@@ -220,7 +220,8 @@ Run ids are `YYYYMMDD-HHMMSS-xxxx`; every command that takes an id accepts a uni
 | `qg runner` | The daemon loop, in the foreground. systemd runs it. |
 | `qg board` | Writes `~/.local/state/qg/board.html`, a static table of the last run per repo+branch with verdict, findings, stage times and links, and prints its path. |
 | `qg rules check --base SHA --head SHA [--repo PATH] [--config FILE]` | Prints the architecture-rule violations `--head` adds over `--base` (see *Architecture rules*), then one summary line. Exit 0 when it adds none, 1 otherwise. |
-| `qg rules baseline [--repo PATH] [--config FILE]` | Counts every violation in the whole tree at `HEAD`, per rule and for the 20 files that hold most, to track the burn-down. Reads git objects only. |
+| `qg rules baseline [--repo PATH] [--config FILE]` | Counts every violation in the whole tree at `HEAD`, per rule (with its change since the repository's previous snapshot) and for the 20 files that hold most, and stores the snapshot (see *Architecture rules*). Reads git objects only. |
+| `qg init [--repo PATH] [--profile python-layered] [--write] [--no-baseline]` | Onboards or reforms a repository: detects its layout at the protected ref, prints the proposed verify.yml (a whole minimal file, or the optional sections it lacks appended) as a diff, counts the proposed rules, and prints the next steps (see *Onboarding a repository*). Dry run unless `--write`; never commits. |
 | `qg install-service` | Copies `systemd/qg-runner.service` to `~/.config/systemd/user/` and runs `systemctl --user daemon-reload`. Enables and starts nothing. |
 
 ## verify.yml
@@ -378,6 +379,45 @@ and model keys are never inherited; plus `UV_PROJECT_ENVIRONMENT` (the cached ve
   first in the plan, so a truncated plan never loses it, and the charter tells the agent to walk those topics as its
   `plan:` flows.
 
+## Onboarding a repository
+
+`qg init [--repo PATH] [--profile python-layered] [--write] [--no-baseline]` reads the git tree of the protected ref
+(git objects only, so a bare clone works too) and detects:
+
+- the Python project (`uv.lock` at the root, ruff in `pyproject.toml`);
+- the node packages: every `package.json` directory with a `yarn.lock` (the others are listed as skipped: qg installs
+  yarn packages only);
+- the test directories and the unit-test directories (`unit`) inside them;
+- the profile's layers: the profile's `detect:` mapping gives, per layer and for `tests`, the directory names that
+  betray it (`python-layered`: components `api`, `routers`, `routes`, `endpoints`, `websockets`, `cli`; managers
+  `managers`; services `services`; repositories `repositories`, `repos`, `dao`; tests `tests`, `test`). A directory
+  counts only when it holds Python files, lies outside every test directory and inside no other match of the same
+  layer; each becomes a `<dir>/**` glob. A layer with no match is left out and reported.
+
+It then proposes the configuration and prints it as a unified diff:
+
+- **verify.yml at the protected ref**: only the optional sections it lacks, appended to its text, which survives byte
+  for byte (comments and formatting included): `rules:` with the detected layers and tests and `enforce: false`, so
+  the first rollout is advisory, and `lite:` when `affected.backend` exists, its command copied from
+  `affected.backend.command` and `tests` the unit-test globs (left out, and said so, when there is no unit-test
+  directory). With both present it proposes nothing: already configured.
+- **no verify.yml**: a whole minimal file (`uv sync --frozen`, the yarn packages, a Postgres image and database, ruff
+  as the static stage when the project uses it, pytest on the test directories as the backend stage, prod and
+  staging gating those two, and `rules:`). `uv.lock` is required.
+
+Every proposal is parsed with the verify.yml schema and its rules resolved against the profile before it is shown;
+the values to review (database name, commands, deploy policies, frontend stage, a lite command that uses a database
+placeholder) are listed as `review` lines. Then it counts the proposed rules over the whole tree at the protected
+ref and stores the snapshot (see *The burn-down*); `--no-baseline` skips it.
+
+`--write` writes `.claude/verify.yml` into the working tree of `--repo`, and only when the file there is absent or
+equal to the protected ref's; qg never commits it. Commit it to the protected branch: qg reads it from nowhere else.
+**The runner must run code that knows the new keys before that commit lands**: a `qg runner` daemon started before
+the upgrade rejects unknown keys in memory and stalls the queue. `qg init` compares the service's start time with
+the last change of the installed `qg/config.py` and prints a `WARNING` when the service is older. Then `qg lite`
+checks a commit in the foreground, `qg rules baseline` tracks the burn-down, and `rules.enforce: true` on the
+protected branch makes a new violation fail the static stage.
+
 ## Architecture rules
 
 A profile is data bundled with qg: `qg/profiles/<name>.yml` names the layers of an architecture, the imports
@@ -418,6 +458,13 @@ mapping instead of the protected verify.yml, to try a repository that has not op
 `enforce: false` is the rollout mode: in a run the static stage still checks, logs every regression and the summary
 (marked `(advisory)`) to `static.log` and records the `qg rules check` command, but the check never fails the stage;
 `qg rules check` still exits 1 on a regression.
+
+**The burn-down.** `qg rules baseline` (and `qg init`) count the whole tree: every Python file read from git by blob
+id, semgrep in a systemd scope with the static lane's default limits (`qg-rules-<id>-static-<n>`), the process at
+nice 10 in the idle I/O class. Each count is stored as
+`~/.local/state/qg/rules/<repository>-<hash>/<UTC time>-<sha12>.json` (the commit, the `rules:` it counted with, and
+every rule, file and count), and the output gives the total and each rule's change since the previous snapshot of
+the repository, noting when the rules configuration changed in between. The ratchet never reads these snapshots.
 
 ## Mutant hunt
 
