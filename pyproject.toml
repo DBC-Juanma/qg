@@ -3,6 +3,7 @@ name = "qg"
 version = "0.1.0"
 description = "Feature verification runner: queued, isolated, staged verification of one commit."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = ["pyyaml>=6.0"]
 

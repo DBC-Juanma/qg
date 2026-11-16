@@ -761,3 +761,7 @@ page embeds them (screenshots as thumbnails, excerpts as `<pre>`). Also under th
   unused for 14 days and `.tmp-*` install directories older than an hour.
 - Ports are free only if `127.0.0.1`, `::1` and `0.0.0.0` all bind.
 - Its own lock (`queue.lock`); it never touches `/run/user/1000/gpu-heavy.lock`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
