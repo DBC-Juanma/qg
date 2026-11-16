@@ -123,6 +123,51 @@ run. A walked plan flow needs 1280 and 390 px in at least one locale. A command 
 "out of memory in lane <lane>". `qg resume <run>` re-runs only the failed stages: the others are reused under fail-closed
 fingerprints, and QA evidence is copied refusing symlinks and any path that resolves outside its run directory.
 
+## Requirements
+
+qg runs on **Linux only**: every stage runs in a `systemd-run` scope of the user session and every agent in a
+`bubblewrap` jail. macOS and Windows are not supported (WSL2 with systemd enabled is untested).
+
+| Needed for | Program | Notes |
+|---|---|---|
+| everything | Python 3.12, [`uv`](https://docs.astral.sh/uv/) | `uv` installs qg and the right Python |
+| everything | `git`, `curl` | |
+| everything | systemd user session (`systemd-run`, `systemctl --user`), cgroup v2 | the default on current distributions |
+| everything | Docker Engine, usable without `sudo` | runs the Postgres container of each run |
+| agent stages | `bubblewrap` at `/usr/bin/bwrap` | the jail of every agent |
+| agent stages | [Claude Code](https://code.claude.com/docs) (`claude` on `PATH`), logged in | |
+| QA stage | Node.js 18 or newer with `npx` | runs `@playwright/mcp` |
+| audit of the simplify stage | `ruff`, `semgrep`, `gitleaks`, `osv-scanner` on `PATH` | then `qg audit-rules` downloads the semgrep packs |
+| cycle page thumbnails (optional) | `ffmpeg` or ImageMagick (`magick` / `convert`) | without it the page links the full images |
+
+System packages:
+
+```bash
+# Debian / Ubuntu (24.04 or newer; older releases ship Node < 18: install Node from nodesource.com instead)
+sudo apt install git curl bubblewrap docker.io nodejs npm gitleaks ffmpeg
+sudo usermod -aG docker "$USER"        # log out and in again
+
+# Fedora
+sudo dnf install git curl bubblewrap nodejs npm
+# Docker Engine: https://docs.docker.com/engine/install/fedora/ ; gitleaks and ffmpeg: see below
+
+# Arch
+sudo pacman -S git curl bubblewrap docker nodejs npm ffmpeg
+sudo systemctl enable --now docker && sudo usermod -aG docker "$USER"
+```
+
+The same on every distribution:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh        # uv
+curl -fsSL https://claude.ai/install.sh | bash         # Claude Code, then run `claude` once to log in
+uv tool install ruff && uv tool install semgrep        # audit tools
+```
+
+`gitleaks` (where the distribution has no package) and `osv-scanner` are single binaries: download them from
+<https://github.com/gitleaks/gitleaks/releases> and <https://github.com/google/osv-scanner/releases> into a directory
+on `PATH`. After installing qg, `qg doctor` checks docker, systemd-run, uv, git, claude, curl, disk, ports and images.
+
 ## Install and enable
 
 ```bash
