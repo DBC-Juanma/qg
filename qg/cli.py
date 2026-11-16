@@ -23,6 +23,7 @@ from qg import (
     executor,
     git,
     inplace,
+    lite,
     notify,
     paths,
     phase_scope,
@@ -698,6 +699,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
         worktree=worktree,
         allow_manual=args.allow_manual,
     )
+
+
+def cmd_lite(args: argparse.Namespace) -> int:
+    """Checks a commit in the foreground with the deterministic stages; 0 green, 1 red."""
+    return lite.run(args.repo, args.ref)
 
 
 GC_DAYS = 7
@@ -1684,6 +1690,15 @@ def build_parser() -> argparse.ArgumentParser:
         "that failed at least once, labelled always fails or flaky k/N",
     )
     p.add_argument("--dry-run", action="store_true", help="print the plan; create nothing")
+
+    p = command(
+        "lite",
+        cmd_lite,
+        "check a commit now, in the foreground: static, rules, the affected tests that need no "
+        "database, mutants; no Postgres, stack or agent, and no deploy verdict",
+    )
+    p.add_argument("--repo", default=".", help="worktree to check (default: current directory)")
+    p.add_argument("--ref", default="HEAD", help="commit to check (default: HEAD)")
 
     p = command(
         "nightly",

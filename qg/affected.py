@@ -14,6 +14,7 @@ from pathlib import PurePosixPath
 from qg.config import Affected, FrontendPackage
 
 TEST_FILE_GLOBS = ("test_*.py", "*_test.py")
+NONE_SELECTED = "no backend tests were selected: the stage cannot pass without any"
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ def backend(
         if not exists(name)
     ]
     if not tests:
-        problems.append("no backend tests were selected: the stage cannot pass without any")
+        problems.append(NONE_SELECTED)
     commands = [spec.command.replace("{tests}", _quoted(tests))] if tests else []
     return Selection(tests, commands, notes, problems)
 

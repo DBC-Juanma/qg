@@ -124,12 +124,18 @@ class Sandbox:
 
     @property
     def values(self) -> dict[str, str]:
-        """Returns the placeholder values every command may use."""
-        pg = self.ports["pg"]
-        return {
+        """Returns the placeholder values every command may use; a sandbox without ports (`qg
+        lite`) has no port, database URL or stack placeholders."""
+        common = {
             "run_id": self.run_id,
             "src": str(self.src),
             "run_dir": str(self.run_dir),
+        }
+        if not self.ports:
+            return common
+        pg = self.ports["pg"]
+        return {
+            **common,
             "backend_port": str(self.ports["backend"]),
             "frontend_port": str(self.ports["frontend"]),
             "pg_port": str(pg),
@@ -406,6 +412,18 @@ def _worktree(request: Request, cfg: Config, log: Path, limit: int) -> Path:
     return src
 
 
+def venv_for(src: Path) -> Path:
+    """Returns the cached Python environment of the checkout `src`, keyed by its uv.lock."""
+    return paths.VENVS / _digest(src / "uv.lock", "uv.lock")
+
+
+def install_deps(sandbox: Sandbox, cfg: Config, log: Path, limit: int) -> None:
+    """Links the cached Python and node dependencies into the sandbox, building a missing one."""
+    _python(sandbox, cfg, log, limit)
+    for package in cfg.deps.node_packages:
+        _node(sandbox, cfg, package, log, limit)
+
+
 def create(request: Request, cfg: Config) -> Sandbox:
     """Builds the run's sandbox for `request` and returns it, ready for the stages."""
     run_id = request.id
@@ -413,21 +431,18 @@ def create(request: Request, cfg: Config) -> Sandbox:
     limit = cfg.timeouts["setup"] * 60
     queue.update(run_id, _mark_created)
     src = _worktree(request, cfg, log, limit)
-    venv = paths.VENVS / _digest(src / "uv.lock", "uv.lock")
     sandbox = Sandbox(
         run_id=run_id,
         repo=request.repo,
         sha=request.sha,
         src=src,
         run_dir=paths.run_dir(run_id),
-        venv=venv,
+        venv=venv_for(src),
         db=cfg.postgres.db,
         ports=allocate_ports(run_id, cfg.playwright.shards if cfg.playwright else 1),
         limits=cfg.resources.lanes,
     )
-    _python(sandbox, cfg, log, limit)
-    for package in cfg.deps.node_packages:
-        _node(sandbox, cfg, package, log, limit)
+    install_deps(sandbox, cfg, log, limit)
     start_postgres(sandbox, cfg, log, limit)
     shards = shard_count(sandbox.ports)
     for index in range(1, shards):

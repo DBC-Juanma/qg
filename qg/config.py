@@ -280,6 +280,15 @@ class Mutants:
 
 
 @dataclass(frozen=True)
+class Lite:
+    """`qg lite`: the command that runs the affected tests needing no database, and the globs of
+    those tests (empty: every test `affected.backend` selects)."""
+
+    command: str
+    tests: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Audit:
     """The nightly audit inside S0: the lenses it runs before the simplify agent, commit by commit
     and uncapped, and the minutes after which a hung audit fails."""
@@ -332,6 +341,7 @@ class Config:
     typical_minutes: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_TYPICAL_MINUTES))
     probe: Probe | None = None
     mutants: Mutants | None = None
+    lite: Lite | None = None
     audit: Audit | None = None
     rules: Rules | None = None
 
@@ -714,6 +724,17 @@ def _mutants(reader: Reader, raw: Any, affected: Affected) -> Mutants:
     )
 
 
+def _lite(reader: Reader, raw: Any, affected: Affected) -> Lite:
+    """Validates the top-level `lite` section; it needs `affected.backend` to select the tests."""
+    section = reader.mapping(raw, "lite", required=("command",), optional=("tests",))
+    if affected.backend is None:
+        reader.fail("lite", "needs affected.backend: it selects the tests lite runs")
+    command = reader.text(section["command"], "lite.command")
+    if "{tests}" not in command:
+        reader.fail("lite.command", "must contain the {tests} placeholder")
+    return Lite(command=command, tests=reader.texts(section.get("tests", []), "lite.tests"))
+
+
 def _audit(reader: Reader, raw: Any) -> Audit:
     """Validates the top-level `audit` section."""
     section = reader.mapping(raw, "audit", required=(), optional=("lenses", "time_limit_minutes"))
@@ -812,6 +833,7 @@ def parse(raw: Any, source: str) -> Config:
             "typical_minutes",
             "probe",
             "mutants",
+            "lite",
             "audit",
             "rules",
         ),
@@ -911,6 +933,7 @@ def parse(raw: Any, source: str) -> Config:
         typical_minutes=typical,
         probe=_probe(reader, top["probe"], affected) if "probe" in top else None,
         mutants=_mutants(reader, top["mutants"], affected) if "mutants" in top else None,
+        lite=_lite(reader, top["lite"], affected) if "lite" in top else None,
         audit=_audit(reader, top["audit"]) if "audit" in top else None,
         rules=_rules(reader, top["rules"]) if "rules" in top else None,
     )

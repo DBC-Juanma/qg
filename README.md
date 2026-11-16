@@ -198,6 +198,7 @@ Run ids are `YYYYMMDD-HHMMSS-xxxx`; every command that takes an id accepts a uni
 | Command | What it does |
 |---|---|
 | `qg verify --feature TEXT [--prd ID --phase ID] [--repo PATH] [--ref HEAD] [--base SHA] [--plan PATH] [--env prod\|staging] [--no-qa] [--simplify] [--force] [--dry-run]` | Runs the QA stage only with both `--prd` and `--phase` (a phase close) and without `--no-qa`; without them it prints the `QA left out` line and queues the other stages (see *QA only at phase close or release*). Resolves the canonical repository (the real path of the git common dir's parent, so every worktree of one repository is the same repo), branch (`detached` when none), sha and tree; refuses a repository whose `master` (else `origin/master`) has no `.claude/verify.yml`. Prints the existing run and queues nothing when the tree already passed every asked stage (unless `--force`). `--force` queues anyway and reuses nothing. Otherwise queues the run (superseding a queued run of the same repo+branch), appends it to the feature's cycle and prints run id, queue position and an ETA from the last five runs. A plain verification (no `--force`, `--stress`, retest or resume, on a branch) is held 120 s in the queue before it may start (`queue.HOLD_SECONDS`), so a newer commit of the same cycle supersedes it before it boots anything; `qg verify` and `qg status` print `starts in Ns: waiting for a newer commit of this cycle to supersede it` and the ETA counts the hold. Nightly, release and phase runs and automatic retries are never held. `--feature` is required. `--base` is the commit the change is measured from (default: the `deployed.json` record of the repo and env); with a base qg writes `runs/<id>/plan.md` (see *The base and the plan*). **`--env prod` with no base and no `--plan` exits non-zero: "pass --base <sha> or --plan PATH"; it never runs with an empty plan.** `--dry-run` prints the base, the generated plan, the stages (S0 included), the commands with example values, the specs S4 would run and the teardown commands, and creates nothing. |
+| `qg lite [--repo PATH] [--ref HEAD]` | Checks a commit now, in the foreground, with static, rules, the affected tests that need no database and the mutant hunt; no Postgres, stack or agent. Exit 0 green, 1 red. Never queued and never a deploy verdict (see *Lite verification*). |
 | `qg wait <id> [--timeout S]` | Polls `state.json` every 5 s, one line per stage transition. A run that ended `error` and was queued again (see *Infrastructure failures*) is followed to its retry. Exit 0 READY, 1 NOT READY, 2 cancelled, interrupted, superseded or error, 3 timeout, 4 while qg is paused (the run is queued and qg is not enabled: it prints that once and exits). Cheap; if it dies the run goes on. |
 | `qg status [--all]` | Enabled or paused, service state, the four slots, the queue, the last-deployed record per repo and env, and the last run per repo+branch (id, sha, env, verdict, open P0/P1, when, feature). |
 | `qg deployed <sha> --env prod\|staging [--repo PATH]` | Sets the last-deployed record by hand. |
@@ -284,6 +285,9 @@ probe:                           # optional: the P0 probe and flip (needs affect
 mutants:                         # optional: the mutant hunt after a passing backend stage (needs affected.backend)
   max: 12                        # mutants per run, one changed line at a time across the changed files
   time_limit_minutes: 20         # added to the deadline of a run with the backend stage
+lite:                            # optional: the tests `qg lite` runs (needs affected.backend; see Lite verification)
+  command: "uv run pytest -q {tests}"   # runs the selected tests that need no database
+  tests: ["tests/unit/**"]       # globs of the tests that need no database (default: every selected test)
 rules:                           # optional: architecture rules in the static stage (see Architecture rules)
   profile: python-layered
   layers: {components: ["app/api/**"], managers: ["app/managers/**"], services: ["app/services/**"], repositories: ["app/repositories/**"]}
@@ -428,6 +432,33 @@ an operator next to a parenthesis or a comment is left alone. Each set of tests 
 changed file that does not parse is named and skipped, and a crash of the hunt becomes its note. The hunt only reports: the
 stage summary ends with "mutantes: 2 vivos de 12 (src/x.py:41 `>=` -> `<`; …)" and `runs/<id>/mutants.json` lists
 each mutant with killed, survived or undecided; the stage's status never changes.
+
+## Lite verification
+
+`qg lite [--repo PATH] [--ref HEAD]` is the inner loop a coding agent runs between iterations: a foreground check of
+one commit, typically seconds to a couple of minutes. It runs only the deterministic stages, one after the other:
+
+- **static**: the commands of `stages.static`, stopping at the first that fails and printing its output tail;
+- **rules**: the architecture rules ratchet of the commit against its merge-base with the base branch, when
+  verify.yml has `rules:` (`path:line rule-id message` per new violation);
+- **tests**: the affected tests of the change (`affected.backend`) narrowed to the `lite.tests` globs and run with
+  `lite.command`, when verify.yml has `lite:`; without it the line says the tests are not configured for lite;
+- **mutants**: the mutant hunt on the added lines with the same narrowed tests, after the tests passed, when
+  verify.yml has `mutants:` and `lite:`, bounded to 2 minutes; it only informs.
+
+There is no Postgres container, no app stack, no agent (simplify, QA, audit, probe) and no Playwright. The commit is
+checked out in a detached worktree under `~/.local/state/qg/lite/<id>/src` with the cached Python and node
+dependencies (the same caches as the runner, built on a miss), and removed afterwards; uncommitted changes are never
+checked, and the output says so when the worktree has some. verify.yml is read from the protected ref, as for a run.
+Commands run in systemd scopes like the runner's (`qg-lite-<id>-<lane>-<n>`): static and rules with the static lane's
+limits, the tests also capped like the static lane. At most 2 lite checks run at once on the machine (the others print
+`waiting for a lite slot` and wait), each starts only when MemAvailable fits its tests cap, and lite runs at nice 10 in
+the idle I/O class. It never takes a runner slot, so a queued verification is never held behind it.
+
+The output is one line per step (passed, failed, skipped or info, with its time), the lines to fix under a failed
+step, and one summary line: `GREEN` (exit 0) or `RED: <steps> failed` (exit 1). Logs stay in
+`~/.local/state/qg/lite/<id>/logs` for a day. Lite writes nothing under `runs/`: it is no verification, `qg check`
+never accepts it and no run reuses it. `qg verify` remains the deploy gate.
 
 ## Nightly simplify
 

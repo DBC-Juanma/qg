@@ -10,7 +10,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from qg import affected, git, paths, simplify, stages
+from qg import affected, git, simplify, stages
 from qg.config import Affected, Config
 from qg.probe import ProbeFailure, scratch
 from qg.sandbox import Sandbox
@@ -262,7 +262,7 @@ def hunt(box: Sandbox, cfg: Config) -> str:
     chosen = pick(candidates, cfg.mutants.max)
     if not chosen:
         return f"mutants: none{unread}" if skipped else ""
-    home = paths.run_dir(box.run_id) / "mutants"
+    home = box.run_dir / "mutants"
     shutil.rmtree(home, ignore_errors=True)
     home.mkdir(parents=True)
     tried: list[Mutant] = []
@@ -285,7 +285,7 @@ def hunt(box: Sandbox, cfg: Config) -> str:
     except ProbeFailure as exc:
         return f"mutants: could not be tried ({exc})"
     body = json.dumps([asdict(m) for m in tried], indent=2, ensure_ascii=False) + "\n"
-    atomic_write(paths.run_dir(box.run_id) / "mutants.json", body)
+    atomic_write(box.run_dir / "mutants.json", body)
     alive = [m for m in tried if m.outcome == "survived"]
     left = sum(1 for m in tried if m.outcome == "undecided")
     shown = "; ".join(f"{m.file}:{m.line} {m.mutation}" for m in alive[:SHOWN])
