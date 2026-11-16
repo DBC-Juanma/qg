@@ -9,6 +9,7 @@ from pathlib import Path
 from qg.util import die
 
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 BASE_CANDIDATES = ("master", "origin/master", "main", "origin/main")
 GIT_TIMEOUT = 120.0
@@ -119,11 +120,14 @@ def show(repo: str, sha: str, path: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def contents(repo: str, sha: str, names: list[str]) -> dict[str, bytes]:
-    """Returns the bytes of each file of `names` at commit `sha`, read by one cat-file process."""
-    if not names:
+def blobs(repo: str, oids: list[str]) -> dict[str, bytes]:
+    """Returns the bytes of each blob of `oids`, read by one cat-file process; exits when an
+    answer is not the blob asked for."""
+    if not oids:
         return {}
-    asked = "".join(f"{sha}:{name}\n" for name in names).encode()
+    if not all(OID.fullmatch(oid) for oid in oids):
+        die(f"not object ids: {[oid for oid in oids if not OID.fullmatch(oid)][:3]}")
+    asked = "".join(f"{oid}\n" for oid in oids).encode()
     try:
         result = subprocess.run(
             ["git", "-C", repo, "cat-file", "--batch"],
@@ -137,14 +141,51 @@ def contents(repo: str, sha: str, names: list[str]) -> dict[str, bytes]:
     if result.returncode != 0:
         die(f"git cat-file --batch failed in {repo}: {result.stderr.decode(errors='replace')}")
     data, found, at = result.stdout, {}, 0
-    for name in names:
+    for oid in oids:
         end = data.index(b"\n", at)
         header = data[at:end].split()
-        if len(header) != 3 or header[1] != b"blob":
-            die(f"{sha[:12]}:{name} is not a file in {repo}")
+        if len(header) != 3 or header[0].decode() != oid or header[1] != b"blob":
+            die(f"git cat-file answered {data[at:end][:80]!r} for blob {oid} in {repo}")
         start = end + 1
-        found[name] = data[start : start + int(header[2])]
+        found[oid] = data[start : start + int(header[2])]
         at = start + int(header[2]) + 1
+    if at != len(data):
+        die(f"git cat-file answered more than the {len(oids)} blob(s) asked for in {repo}")
+    return found
+
+
+def tree_entries(repo: str, sha: str) -> list[tuple[str, str, str]]:
+    """Returns (mode, blob id, path) of every blob of commit `sha`'s tree, read NUL-separated."""
+    raw = _git(repo, "ls-tree", "-r", "-z", "--full-tree", sha)
+    if raw.returncode != 0:
+        die(f"git ls-tree {sha} failed in {repo}: {raw.stderr.strip()}")
+    found = []
+    for entry in raw.stdout.split("\0"):
+        if entry:
+            meta, _, path = entry.partition("\t")
+            mode, kind, oid = meta.split()
+            if kind == "blob":
+                found.append((mode, oid, path))
+    return found
+
+
+def raw_changes(repo: str, base: str, head: str) -> list[tuple[str, str, str, str, str, str, str]]:
+    """Returns (status, old mode, old id, new mode, new id, old path, new path) of each file
+    `base..head` adds, modifies or renames, from `git diff --raw -z`; old path is empty but for
+    a rename."""
+    raw = _git(repo, "diff", "--raw", "-z", "--no-abbrev", "-M", "--diff-filter=AMR", base, head)
+    if raw.returncode != 0:
+        die(f"git diff --raw {base}..{head} failed in {repo}: {raw.stderr.strip()}")
+    fields = raw.stdout.split("\0")
+    found = []
+    index = 0
+    while index < len(fields) and fields[index]:
+        old_mode, new_mode, old_oid, new_oid, status = fields[index].lstrip(":").split()
+        if status.startswith("R"):
+            old, new, index = fields[index + 1], fields[index + 2], index + 3
+        else:
+            old, new, index = "", fields[index + 1], index + 2
+        found.append((status[0], old_mode, old_oid, new_mode, new_oid, old, new))
     return found
 
 

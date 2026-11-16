@@ -9,6 +9,7 @@ import fnmatch
 import io
 import json
 import re
+import shutil
 import tempfile
 import tokenize
 from collections import Counter
@@ -20,7 +21,7 @@ from typing import Any
 import yaml
 
 from qg import git, paths, proc
-from qg.audit import RULE, added_by_file
+from qg.audit import RULE
 from qg.config import Reader, Rules, load_yaml
 from qg.queue import CommandRun
 from qg.sandbox import Sandbox, base_env
@@ -36,6 +37,8 @@ PRAGMA = re.compile(r"#\s*(noqa\b|type:|pragma\b|fmt:|pyright:|mypy:|ruff:|pylin
 ENCODING = re.compile(r"^#.*coding[:=]")
 GLOB_TAIL = re.compile(r"^[*?\[\]]*(\.py)?$")
 STAGE_COMMAND = "qg rules check"
+REGULAR = ("100644", "100755")
+UNSAFE = ("\\", "\0", "\n", "\r")
 
 Wrap = Callable[[list[str]], list[str]]
 
@@ -268,6 +271,8 @@ def scan(
     found: dict[str, list[Hit]] = {target: [] for target in targets}
     if not profile.semgrep or not targets:
         return found
+    if shutil.which("semgrep", path=base_env().get("PATH")) is None:
+        die("semgrep is not on PATH: `uv tool install semgrep==1.183.0`")
     config, output = root / "rules.semgrep.yml", root / "semgrep.json"
     config.write_text(semgrep_config(profile))
     argv = [
@@ -319,30 +324,32 @@ def comment_lines(text: str, name: str) -> list[int]:
     return lines
 
 
-def changes(repo: str, base: str, head: str) -> list[tuple[str, str, str]]:
-    """Returns (status, base path, head path) of each file added, modified or renamed."""
-    raw = git.out(repo, "diff", "--name-status", "-z", "-M", "--diff-filter=AMR", base, head)
-    fields = raw.split("\0") if raw else []
-    found = []
-    index = 0
-    while index < len(fields) and fields[index]:
-        status = fields[index][0]
-        if status == "R":
-            found.append((status, fields[index + 1], fields[index + 2]))
-            index += 3
-        else:
-            found.append((status, "", fields[index + 1]))
-            index += 2
-    return found
+def safe_path(name: str) -> str:
+    """Returns repository path `name`; exits when it could leave a directory it is joined to."""
+    parts = name.split("/")
+    odd = any(char in name for char in UNSAFE) or name.startswith("/")
+    if odd or any(part in ("", ".", "..") for part in parts):
+        die(f"refusing the repository path {name!r}: absolute, `..`, or an unsafe character")
+    return name
 
 
-def materialise(repo: str, sha: str, files: dict[str, str], root: Path) -> None:
-    """Writes each repository path of commit `sha` to `root`/<its key>, from git's objects."""
-    blobs = git.contents(repo, sha, list(files.values()))
-    for target, name in files.items():
-        path = root / target
+def materialise(repo: str, files: dict[str, str], root: Path) -> None:
+    """Writes each blob of `files` (path under `root` -> blob id) below `root`, never outside."""
+    found = git.blobs(repo, list(dict.fromkeys(files.values())))
+    top = root.resolve()
+    for target, oid in files.items():
+        path = root / safe_path(target)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(blobs[name])
+        if not path.resolve().is_relative_to(top) or path.is_symlink():
+            die(f"refusing to write {target!r} outside {root}")
+        path.write_bytes(found[oid])
+
+
+def added_lines(repo: str, old: str, new: str, text: str) -> set[int]:
+    """Returns the lines blob `new` adds over blob `old`; every line when there is no `old`."""
+    if not old:
+        return set(range(1, text.count("\n") + 2))
+    return git.added_lines(git.out(repo, "diff", "-U0", old, new))
 
 
 def check(
@@ -360,38 +367,46 @@ def check(
     `workdir`; nothing is written into the repository.
     """
     profile = load_profile(rules)
-    changed = changes(repo, base, head)
-    sources = [(status, old, new) for status, old, new in changed if new.endswith(SOURCE_SUFFIX)]
+    changed = git.raw_changes(repo, base, head)
+    for *_, old, new in changed:
+        safe_path(new)
+        if old:
+            safe_path(old)
+    sources = {
+        new: old_oid if old_mode in REGULAR else ""
+        for _, old_mode, old_oid, new_mode, new_oid, _, new in changed
+        if new.endswith(SOURCE_SUFFIX) and new_mode in REGULAR
+    }
+    blob = {new: new_oid for *_, new_oid, _, new in changed}
     regressions: list[Hit] = []
     fixed = 0
     with tempfile.TemporaryDirectory(prefix="qg-rules-", dir=workdir) as tmp:
         root = Path(tmp)
-        heads = {f"head/{new}": new for _, _, new in sources}
-        bases = {f"base/{new}": old or new for status, old, new in sources if status != "A"}
-        materialise(repo, head, heads, root)
-        materialise(repo, base, bases, root)
-        names = {**heads, **{target: target.removeprefix("base/") for target in bases}}
+        heads = {f"head/{new}": blob[new] for new in sources}
+        bases = {f"base/{new}": old for new, old in sources.items() if old}
+        materialise(repo, {**heads, **bases}, root)
+        names = {target: target.split("/", 1)[1] for target in (*heads, *bases)}
         hits = scan(profile, root, names, wrap, seconds)
-        for _, _, new in sources:
+        for new in sources:
             after = Counter(hit.rule for hit in hits[f"head/{new}"])
             before = Counter(hit.rule for hit in hits.get(f"base/{new}", []))
             fixed += sum((before - after).values())
             for rule in sorted(after):
                 if after[rule] > before[rule]:
                     regressions += [hit for hit in hits[f"head/{new}"] if hit.rule == rule]
-        if profile.comments is not None and sources:
-            added = added_by_file(git.out(repo, "diff", "-U0", "-M", base, head, "--", "*.py"))
-            for _, _, new in sources:
+        if profile.comments is not None:
+            for new, old in sources.items():
                 text = (root / f"head/{new}").read_text(errors="replace")
+                added = added_lines(repo, old, blob[new], text)
                 regressions += [
                     Hit(profile.comments.id, new, line, profile.comments.message)
                     for line in comment_lines(text, new)
-                    if line in added.get(new, set())
+                    if line in added
                 ]
     if profile.markdown is not None:
         regressions += [
             Hit(profile.markdown.id, new, 1, profile.markdown.message)
-            for status, _, new in changed
+            for status, *_, new in changed
             if status == "A" and new.endswith(MARKDOWN_SUFFIX) and profile.markdown.applies(new)
         ]
     regressions.sort(key=lambda hit: (hit.path, hit.line, hit.rule))
@@ -408,13 +423,19 @@ def check(
 def baseline(repo: str, rules: Rules, sha: str) -> Counter[tuple[str, str]]:
     """Returns the violations per (rule, file) of the whole tree at `sha`, for the burn-down."""
     profile = load_profile(rules)
-    tracked = git.out(repo, "ls-tree", "-r", "--name-only", sha).splitlines()
-    sources = [name for name in tracked if name.endswith(SOURCE_SUFFIX)]
+    entries = git.tree_entries(repo, sha)
+    tracked = [path for _, _, path in entries]
+    regular = {
+        safe_path(path): oid
+        for mode, oid, path in entries
+        if path.endswith(SOURCE_SUFFIX) and mode in REGULAR
+    }
+    sources = list(regular)
     counts: Counter[tuple[str, str]] = Counter()
     with tempfile.TemporaryDirectory(prefix="qg-rules-") as tmp:
         root = Path(tmp)
+        materialise(repo, {f"head/{name}": oid for name, oid in regular.items()}, root)
         targets = {f"head/{name}": name for name in sources}
-        materialise(repo, sha, targets, root)
         for found in scan(profile, root, targets, lambda argv: argv, 3600).values():
             counts.update((hit.rule, hit.path) for hit in found)
         if profile.comments is not None:
@@ -429,8 +450,9 @@ def baseline(repo: str, rules: Rules, sha: str) -> Counter[tuple[str, str]]:
 
 
 def stage_base(repo: str, base: str, sha: str) -> str:
-    """Returns the base the static stage ratchets against: the run's, else the branch point."""
-    return base or git.out(repo, "merge-base", sha, git.base_ref(repo))
+    """Returns the base the static stage ratchets against: the merge-base of `sha` with the
+    run's base, else with the base branch."""
+    return git.out(repo, "merge-base", sha, base or git.base_ref(repo))
 
 
 def in_stage(

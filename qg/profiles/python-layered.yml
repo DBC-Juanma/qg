@@ -41,27 +41,35 @@ banned:
   - id: swallowed-exception
     layers: [components, managers, services, repositories]
     message: let it raise; no fallbacks
-    pattern-either:
-      - pattern: |
-          try:
-            ...
-          except Exception:
-            pass
-      - pattern: |
-          try:
-            ...
-          except Exception as $E:
-            pass
-      - pattern: |
-          try:
-            ...
-          except BaseException:
-            pass
-      - pattern: |
-          try:
-            ...
-          except BaseException as $E:
-            pass
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try:
+                ...
+              except $T:
+                pass
+          - pattern: |
+              try:
+                ...
+              except $T as $E:
+                pass
+          - pattern: |
+              try:
+                ...
+              except $T:
+                pass
+              finally:
+                ...
+          - pattern: |
+              try:
+                ...
+              except $T as $E:
+                pass
+              finally:
+                ...
+      - metavariable-regex:
+          metavariable: $T
+          regex: ^(Exception|BaseException)$
   - id: bare-except
     layers: [components, managers, services, repositories]
     message: let it raise; no fallbacks

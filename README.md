@@ -399,7 +399,10 @@ both sides in one semgrep call, and fails only where the head holds more matches
 base held (a new file starts at 0, a renamed one is compared with its old path); it never keys on line numbers. For a
 regression it prints every head-side match of that rule in that file as `path:line rule-id message`. Comments count
 only on the lines the change adds and markdown only for added files. Code moved from one file into a new one counts
-as new in the new file. Nothing is written into the repository.
+as new in the new file. Nothing is written into the repository. The repository's contents are untrusted: files are
+read by blob id (`git diff --raw -z`, `git ls-tree -z`, `git cat-file --batch`, each answer checked against the id
+asked for), only regular files are written (a symlink or submodule entry is skipped), and a path that is absolute,
+holds an empty, `.` or `..` part, a backslash, NUL or newline fails the check instead of being written.
 
 In a run, the check follows the static stage's commands: its base is the run's `--base`, else the merge-base of the
 commit with the base branch; semgrep runs in the static lane's scope, its lines go to `logs/static.log` and the
