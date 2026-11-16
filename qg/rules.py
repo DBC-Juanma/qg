@@ -38,7 +38,7 @@ ENCODING = re.compile(r"^#.*coding[:=]")
 GLOB_TAIL = re.compile(r"^[*?\[\]]*(\.py)?$")
 STAGE_COMMAND = "qg rules check"
 REGULAR = ("100644", "100755")
-UNSAFE = ("\\", "\0", "\n", "\r")
+UNSAFE = ("\\", "\0", "\n", "\r", "\ufffd")
 
 Wrap = Callable[[list[str]], list[str]]
 
@@ -368,6 +368,9 @@ def check(
     """
     profile = load_profile(rules)
     changed = git.raw_changes(repo, base, head)
+    news = [new for *_, new in changed]
+    if len(set(news)) != len(news):
+        die(f"git lists a changed path twice in {base[:12]}..{head[:12]}: refusing the check")
     for *_, old, new in changed:
         safe_path(new)
         if old:
@@ -425,6 +428,8 @@ def baseline(repo: str, rules: Rules, sha: str) -> Counter[tuple[str, str]]:
     profile = load_profile(rules)
     entries = git.tree_entries(repo, sha)
     tracked = [path for _, _, path in entries]
+    if len(set(tracked)) != len(tracked):
+        die(f"git lists a path twice in the tree of {sha[:12]}: refusing the baseline")
     regular = {
         safe_path(path): oid
         for mode, oid, path in entries

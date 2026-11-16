@@ -31,6 +31,28 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
         die(f"git {' '.join(args)} timed out after {GIT_TIMEOUT:g}s in {repo}")
 
 
+def _z_fields(repo: str, *args: str) -> list[str]:
+    """Returns the NUL-separated fields of `git <args>` in `repo`, decoded as strict UTF-8; exits
+    on a git error or on a name that is not valid UTF-8, since a lossy name could collide."""
+    try:
+        result = subprocess.run(
+            ["git", "-c", "core.quotepath=false", "-C", repo, *args],
+            capture_output=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        die(f"git {' '.join(args)} timed out after {GIT_TIMEOUT:g}s in {repo}")
+    if result.returncode != 0:
+        reason = result.stderr.decode(errors="replace").strip()
+        die(f"git {' '.join(args)} failed in {repo}: {reason}")
+    try:
+        return result.stdout.decode("utf-8", errors="strict").split("\0")
+    except UnicodeDecodeError as exc:
+        die(f"git {' '.join(args)} in {repo} lists a path that is not valid UTF-8: {exc}")
+
+
 def out(repo: str, *args: str) -> str:
     """Returns the stripped stdout of `git <args>` in `repo`; exits with git's message on error."""
     result = _git(repo, *args)
@@ -156,11 +178,8 @@ def blobs(repo: str, oids: list[str]) -> dict[str, bytes]:
 
 def tree_entries(repo: str, sha: str) -> list[tuple[str, str, str]]:
     """Returns (mode, blob id, path) of every blob of commit `sha`'s tree, read NUL-separated."""
-    raw = _git(repo, "ls-tree", "-r", "-z", "--full-tree", sha)
-    if raw.returncode != 0:
-        die(f"git ls-tree {sha} failed in {repo}: {raw.stderr.strip()}")
     found = []
-    for entry in raw.stdout.split("\0"):
+    for entry in _z_fields(repo, "ls-tree", "-r", "-z", "--full-tree", sha):
         if entry:
             meta, _, path = entry.partition("\t")
             mode, kind, oid = meta.split()
@@ -173,10 +192,9 @@ def raw_changes(repo: str, base: str, head: str) -> list[tuple[str, str, str, st
     """Returns (status, old mode, old id, new mode, new id, old path, new path) of each file
     `base..head` adds, modifies or renames, from `git diff --raw -z`; old path is empty but for
     a rename."""
-    raw = _git(repo, "diff", "--raw", "-z", "--no-abbrev", "-M", "--diff-filter=AMR", base, head)
-    if raw.returncode != 0:
-        die(f"git diff --raw {base}..{head} failed in {repo}: {raw.stderr.strip()}")
-    fields = raw.stdout.split("\0")
+    fields = _z_fields(
+        repo, "diff", "--raw", "-z", "--no-abbrev", "-M", "--diff-filter=AMR", base, head
+    )
     found = []
     index = 0
     while index < len(fields) and fields[index]:
