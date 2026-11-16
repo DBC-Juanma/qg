@@ -2,6 +2,8 @@
 
 import json
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from qg import paths, proc, queue
@@ -9,6 +11,7 @@ from qg.util import atomic_write
 
 HISTORY_RUNS = 10
 POLL_SECONDS = 3
+SAMPLE_SECONDS = 0.5
 COUNTED = ("passed", "failed")
 
 
@@ -127,3 +130,24 @@ def history(repo: str, lane: str) -> list[int]:
         if len(found) == HISTORY_RUNS:
             break
     return found
+
+
+@contextmanager
+def measured(run_id: str) -> Iterator[list[int]]:
+    """Samples the biggest live lane scope of `run_id` every SAMPLE_SECONDS while the block runs;
+    yields a one-item list holding it, final once the block ends."""
+    stop = threading.Event()
+    seen = [0]
+
+    def loop() -> None:
+        """Samples the live scopes every SAMPLE_SECONDS until `stop`."""
+        while not stop.wait(SAMPLE_SECONDS):
+            seen[0] = max(seen[0], *sample(run_id).values(), 0)
+
+    thread = threading.Thread(target=loop, name="peaks-measured", daemon=True)
+    thread.start()
+    try:
+        yield seen
+    finally:
+        stop.set()
+        thread.join()

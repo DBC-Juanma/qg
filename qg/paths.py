@@ -1,5 +1,6 @@
 """Locations under the qg state root and the run ids that name them."""
 
+import hashlib
 import os
 import secrets
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ SIMPLIFY_QUEUE = STATE_ROOT / "simplify-queue"
 AUDIT_RULES = STATE_ROOT / "audit" / "semgrep"
 AUDIT_LEDGER = STATE_ROOT / "audit" / "ledger"
 LITE = STATE_ROOT / "lite"
+RULES = STATE_ROOT / "rules"
 VENVS = CACHE / "venvs"
 NODE = CACHE / "node"
 NPM = CACHE / "npm"
@@ -175,6 +177,16 @@ def topic_page(cycle_id: str, slug: str) -> Path:
 def thumbs_dir(cycle_id: str) -> Path:
     """Returns the directory of the cycle's cached evidence thumbnails."""
     return cycle_dir(cycle_id) / "thumbs"
+
+
+def repo_key(repo: str) -> str:
+    """Returns the file name of the state kept per canonical repository path `repo`."""
+    return f"{Path(repo).name}-{hashlib.sha1(repo.encode()).hexdigest()[:8]}"
+
+
+def rules_dir(repo: str) -> Path:
+    """Returns the directory of the architecture-rules baselines of repository `repo`."""
+    return RULES / repo_key(repo)
 
 
 def scope_unit(run_id: str) -> str:

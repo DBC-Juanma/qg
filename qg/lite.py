@@ -10,10 +10,8 @@ once MemAvailable fits its tests cap.
 import fcntl
 import fnmatch
 import json
-import os
 import shutil
 import signal
-import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -37,11 +35,10 @@ from qg import (
 from qg.config import Config
 from qg.probe import scratch
 from qg.sandbox import Sandbox, install_deps, venv_for
-from qg.util import atomic_write, die, human, read_tail
+from qg.util import atomic_write, human, read_tail
 
 SLOTS = 2
 PEAKS = "peaks.json"
-SAMPLE_SECONDS = 0.5
 PREFIX = "lite-"
 KEEP_SECONDS = 86400
 MUTANT_MINUTES = 2
@@ -65,14 +62,6 @@ def _cancel(signum: int, frame: FrameType | None) -> None:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     raise proc.Cancelled
-
-
-def _lower_priority() -> None:
-    """Puts this process and everything it starts at nice 10 and the idle I/O class."""
-    os.nice(10)
-    done = proc.run(["ionice", "-c3", "-p", str(os.getpid())])
-    if done.returncode != 0:
-        die(f"ionice -c3 failed: {done.stderr.strip()}")
 
 
 @contextmanager
@@ -117,21 +106,11 @@ def _remember(repo: str, peak: int) -> None:
 @contextmanager
 def _measured(lite_id: str, repo: str) -> Iterator[None]:
     """Samples the biggest scope of the check while the block runs and records it for `repo`."""
-    stop = threading.Event()
     seen = [0]
-
-    def loop() -> None:
-        """Samples the check's live scopes every SAMPLE_SECONDS until `stop`."""
-        while not stop.wait(SAMPLE_SECONDS):
-            seen[0] = max(seen[0], *peaks.sample(lite_id).values(), 0)
-
-    thread = threading.Thread(target=loop, name="lite-peaks", daemon=True)
-    thread.start()
     try:
-        yield
+        with peaks.measured(lite_id) as seen:
+            yield
     finally:
-        stop.set()
-        thread.join()
         if seen[0]:
             _remember(repo, seen[0])
 
@@ -316,7 +295,7 @@ def run(where: str, ref: str) -> int:
     began = time.monotonic()
     signal.signal(signal.SIGTERM, _cancel)
     signal.signal(signal.SIGINT, _cancel)
-    _lower_priority()
+    proc.lower_priority()
     sha = git.resolve_commit(where, ref)
     repo = git.canonical_repo(where)
     loaded = config.load(repo, sha)

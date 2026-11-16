@@ -2,6 +2,12 @@ description: >-
   Layered Python backend: components (HTTP API, websocket, CLI) call managers, managers call
   services, services call repositories, repositories reach the database.
 layers: [components, managers, services, repositories]
+detect:
+  components: [api, routers, routes, endpoints, websockets, cli]
+  managers: [managers]
+  services: [services]
+  repositories: [repositories, repos, dao]
+  tests: [tests, test]
 forbidden_imports:
   - id: components-import-services
     from: [components]

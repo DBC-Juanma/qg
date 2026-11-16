@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from qg.util import die
+
 TIMEOUT_EXIT = 124
 DEFAULT_TIMEOUT = 120.0
 
@@ -46,6 +48,14 @@ def default_signals() -> None:
     """Restores the default SIGTERM and SIGINT handlers in a child before it execs."""
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+def lower_priority() -> None:
+    """Puts this process and everything it starts at nice 10 and the idle I/O class."""
+    os.nice(10)
+    done = run(["ionice", "-c3", "-p", str(os.getpid())])
+    if done.returncode != 0:
+        die(f"ionice -c3 failed: {done.stderr.strip()}")
 
 
 def shell(command: str) -> list[str]:

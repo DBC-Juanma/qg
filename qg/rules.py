@@ -7,26 +7,29 @@ in one file than the base did. Comments and markdown count only what the change 
 
 import fnmatch
 import io
+import itertools
 import json
 import re
 import shutil
 import tempfile
+import time
 import tokenize
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from qg import git, paths, proc
+from qg import git, paths, peaks, proc
 from qg.audit import RULE
-from qg.config import Reader, Rules, load_yaml
+from qg.config import DEFAULT_LANE_LIMITS, Reader, Rules, load_yaml
 from qg.queue import CommandRun
 from qg.sandbox import Sandbox, base_env
 from qg.stages import MAX_FAILURES, StageResult
-from qg.util import die
+from qg.util import atomic_write, die, human, now_iso
 
 PROFILES = Path(__file__).parent / "profiles"
 SOURCE_SUFFIX = ".py"
@@ -39,6 +42,8 @@ GLOB_TAIL = re.compile(r"^[*?\[\]]*(\.py)?$")
 STAGE_COMMAND = "qg rules check"
 REGULAR = ("100644", "100755")
 UNSAFE = ("\\", "\0", "\n", "\r", "\ufffd")
+BASELINE_SECONDS = 3600
+TOP_FILES = 20
 
 Wrap = Callable[[list[str]], list[str]]
 
@@ -62,11 +67,13 @@ class Rule:
 
 @dataclass(frozen=True)
 class Profile:
-    """A profile resolved against one repository: semgrep rules and the two hygiene rules."""
+    """A profile resolved against one repository: semgrep rules, the two hygiene rules and the
+    directory names that betray each layer, for `qg init`."""
 
     semgrep: tuple[Rule, ...]
     comments: Rule | None
     markdown: Rule | None
+    detect: dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -158,9 +165,19 @@ def load_profile(rules: Rules) -> Profile:
         load_yaml(profile_text(rules.profile), source),
         "<root>",
         required=("layers",),
-        optional=("description", "forbidden_imports", "banned", "hygiene"),
+        optional=("description", "detect", "forbidden_imports", "banned", "hygiene"),
     )
     names = reader.texts(raw["layers"], "layers")
+    detect = {
+        layer: reader.texts(dirs, f"detect.{layer}")
+        for layer, dirs in reader.mapping(
+            raw.get("detect", {}), "detect", optional=(*names, TESTS)
+        ).items()
+    }
+    for layer, dirs in detect.items():
+        odd = [name for name in dirs if "/" in name or name in (".", "..")]
+        if odd:
+            reader.fail(f"detect.{layer}", f"{odd} are not directory names")
     unknown = [name for name in rules.layers if name not in names]
     if unknown:
         Reader("rules").fail(
@@ -238,6 +255,7 @@ def load_profile(rules: Rules) -> Profile:
         tuple(rule for rule in live if rule.id not in off),
         None if comments is None or comments.id in off else comments,
         None if markdown is None or markdown.id in off else markdown,
+        detect,
     )
 
 
@@ -423,7 +441,9 @@ def check(
     return Verdict(regressions, summary)
 
 
-def baseline(repo: str, rules: Rules, sha: str) -> Counter[tuple[str, str]]:
+def baseline(
+    repo: str, rules: Rules, sha: str, wrap: Wrap = lambda argv: argv
+) -> Counter[tuple[str, str]]:
     """Returns the violations per (rule, file) of the whole tree at `sha`, for the burn-down."""
     profile = load_profile(rules)
     entries = git.tree_entries(repo, sha)
@@ -441,7 +461,7 @@ def baseline(repo: str, rules: Rules, sha: str) -> Counter[tuple[str, str]]:
         root = Path(tmp)
         materialise(repo, {f"head/{name}": oid for name, oid in regular.items()}, root)
         targets = {f"head/{name}": name for name in sources}
-        for found in scan(profile, root, targets, lambda argv: argv, 3600).values():
+        for found in scan(profile, root, targets, wrap, BASELINE_SECONDS).values():
             counts.update((hit.rule, hit.path) for hit in found)
         if profile.comments is not None:
             for name in sources:
@@ -452,6 +472,75 @@ def baseline(repo: str, rules: Rules, sha: str) -> Counter[tuple[str, str]]:
             if name.endswith(MARKDOWN_SUFFIX) and profile.markdown.applies(name):
                 counts[(profile.markdown.id, name)] += 1
     return +counts
+
+
+def bounded_baseline(repo: str, rules: Rules, sha: str) -> tuple[Counter[tuple[str, str]], int]:
+    """Returns `baseline` of `sha`, its semgrep in a systemd scope capped like the static lane
+    and this process at nice 10 and idle I/O, with the peak bytes of that scope."""
+    proc.lower_priority()
+    scope = f"rules-{paths.new_run_id()}"
+    serial = itertools.count()
+    cpu, memory = DEFAULT_LANE_LIMITS["static"]
+
+    def wrap(argv: list[str]) -> list[str]:
+        """Returns `argv` inside its own static-lane scope."""
+        return [*proc.scoped(scope, "static", cpu, memory, next(serial)), *argv]
+
+    try:
+        with peaks.measured(scope) as seen:
+            counts = baseline(repo, rules, sha, wrap)
+    finally:
+        proc.stop_lanes(scope)
+    return counts, seen[0]
+
+
+def burn_down(repo: str, key: str, rules: Rules, sha: str) -> list[str]:
+    """Counts the whole tree of `sha` (see `bounded_baseline`), stores the snapshot under the
+    rules directory of canonical repository `key` and returns the lines to print: per rule with
+    its change since the previous snapshot, then the files holding most."""
+    began = time.monotonic()
+    counts, peak = bounded_baseline(repo, rules, sha)
+    folder = paths.rules_dir(key)
+    earlier = sorted(folder.glob("*.json")) if folder.is_dir() else []
+    before = json.loads(earlier[-1].read_text()) if earlier else None
+    per_rule: Counter[str] = Counter()
+    per_file: Counter[str] = Counter()
+    for (rule, name), count in counts.items():
+        per_rule[rule] += count
+        per_file[name] += count
+    took = time.monotonic() - began
+    lines = [
+        f"rules at {sha[:12]}: {sum(counts.values())} violation(s) in {len(per_file)} file(s) "
+        f"({human(took)}, semgrep scope peak {peak / 2**20:.0f} MiB)"
+    ]
+    then: Counter[str] = Counter()
+    if before is not None:
+        for rule, _, count in before["counts"]:
+            then[rule] += count
+        same = before["rules"] == json.loads(json.dumps(asdict(rules)))
+        lines.append(
+            f"since {before['at']} at {before['sha'][:12]}: "
+            f"{sum(per_rule.values()) - sum(then.values()):+d}"
+            + ("" if same else " (the rules configuration changed since)")
+        )
+    for rule in sorted({*per_rule, *then}, key=lambda name: (-per_rule[name], name)):
+        delta = f"  {per_rule[rule] - then[rule]:+d}" if before is not None else ""
+        lines.append(f"  {per_rule[rule]:6d}  {rule}{delta}")
+    lines.append("top files:")
+    ranked = sorted(per_file.items(), key=lambda item: (-item[1], item[0]))
+    lines += [f"  {count:6d}  {name}" for name, count in ranked[:TOP_FILES]]
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{sha[:12]}.json"
+    body = {
+        "repo": key,
+        "sha": sha,
+        "at": now_iso(),
+        "rules": asdict(rules),
+        "counts": sorted([rule, name, count] for (rule, name), count in counts.items()),
+    }
+    atomic_write(target, json.dumps(body, indent=1) + "\n")
+    lines.append(f"snapshot {target}")
+    return lines
 
 
 def stage_base(repo: str, base: str, sha: str) -> str:

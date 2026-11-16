@@ -41,8 +41,7 @@ class Item:
 
 def store(repo: str) -> Path:
     """Returns the queue file of the canonical repository path `repo`."""
-    digest = hashlib.sha1(repo.encode()).hexdigest()[:8]
-    return paths.SIMPLIFY_QUEUE / f"{Path(repo).name}-{digest}.json"
+    return paths.SIMPLIFY_QUEUE / f"{paths.repo_key(repo)}.json"
 
 
 def load(repo: str) -> list[Item]:

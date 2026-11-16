@@ -22,6 +22,7 @@ from qg import (
     estimate,
     executor,
     git,
+    init,
     inplace,
     lite,
     notify,
@@ -701,6 +702,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    """Proposes verify.yml for a repository from its protected ref; writes it with --write."""
+    return init.run(args.repo, args.profile, args.write, not args.no_baseline)
+
+
 def cmd_lite(args: argparse.Namespace) -> int:
     """Checks a commit in the foreground with the deterministic stages; 0 green, 1 red."""
     return lite.run(args.repo, args.ref)
@@ -1237,20 +1243,12 @@ def cmd_rules_check(args: argparse.Namespace) -> int:
 
 
 def cmd_rules_baseline(args: argparse.Namespace) -> int:
-    """Prints the violations of the whole tree at HEAD per rule and the files holding most."""
+    """Prints the violations of the whole tree at HEAD per rule, their change since the last
+    snapshot and the files holding most; stores the snapshot."""
     head = git.resolve_commit(args.repo, "HEAD")
-    counts = rules.baseline(args.repo, _rules_of(args.repo, args.config, head), head)
-    per_rule: dict[str, int] = {}
-    per_file: dict[str, int] = {}
-    for (rule, name), count in counts.items():
-        per_rule[rule] = per_rule.get(rule, 0) + count
-        per_file[name] = per_file.get(name, 0) + count
-    print(f"rules at {head[:12]}: {sum(counts.values())} violation(s) in {len(per_file)} file(s)")
-    for rule, count in sorted(per_rule.items(), key=lambda item: (-item[1], item[0])):
-        print(f"  {count:6d}  {rule}")
-    print("top files:")
-    for name, count in sorted(per_file.items(), key=lambda item: (-item[1], item[0]))[:20]:
-        print(f"  {count:6d}  {name}")
+    found = _rules_of(args.repo, args.config, head)
+    for line in rules.burn_down(args.repo, git.canonical_repo(args.repo), found, head):
+        print(line)
     return 0
 
 
@@ -1690,6 +1688,23 @@ def build_parser() -> argparse.ArgumentParser:
         "that failed at least once, labelled always fails or flaky k/N",
     )
     p.add_argument("--dry-run", action="store_true", help="print the plan; create nothing")
+
+    p = command(
+        "init",
+        cmd_init,
+        "onboard or reform a repository: detect its layout at the protected ref, propose "
+        "verify.yml (a minimal file, or the optional sections it lacks), count the rules",
+    )
+    p.add_argument("--repo", default=".", help="repository path (default: current directory)")
+    p.add_argument("--profile", default="python-layered", help="architecture rules profile")
+    p.add_argument(
+        "--write",
+        action="store_true",
+        help="write .claude/verify.yml into the working tree (default: print the proposal)",
+    )
+    p.add_argument(
+        "--no-baseline", action="store_true", help="skip the whole-tree count of the rules"
+    )
 
     p = command(
         "lite",
