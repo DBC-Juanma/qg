@@ -297,6 +297,7 @@ class Rules:
     tests: tuple[str, ...] = ()
     markdown_allow: tuple[str, ...] = ()
     disable: tuple[str, ...] = ()
+    enforce: bool = True
 
 
 @dataclass(frozen=True)
@@ -734,7 +735,7 @@ def _rules(reader: Reader, raw: Any) -> Rules:
         raw,
         "rules",
         required=("profile", "layers"),
-        optional=("tests", "markdown_allow", "disable"),
+        optional=("tests", "markdown_allow", "disable", "enforce"),
     )
     profile = reader.text(section["profile"], "rules.profile")
     if not PROFILE.match(profile):
@@ -751,6 +752,7 @@ def _rules(reader: Reader, raw: Any) -> Rules:
         tests=reader.texts(section.get("tests", []), "rules.tests"),
         markdown_allow=reader.texts(section.get("markdown_allow", []), "rules.markdown_allow"),
         disable=reader.texts(section.get("disable", []), "rules.disable"),
+        enforce=reader.flag(section.get("enforce", True), "rules.enforce"),
     )
 
 

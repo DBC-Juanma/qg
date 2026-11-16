@@ -387,7 +387,7 @@ lines are not comments here) and no new `.md` file outside the allow-list (`READ
 `LICENSE.md` at any depth, plus `markdown_allow`).
 
 A repository opts in with the top-level `rules:` of its verify.yml: `profile`, `layers` (each profile layer it has,
-mapped to path globs), `tests` (globs), `markdown_allow` (globs) and `disable` (rule ids). Globs are `fnmatch`, so `*`
+mapped to path globs), `tests` (globs), `markdown_allow` (globs), `disable` (rule ids) and `enforce` (default `true`). Globs are `fnmatch`, so `*`
 crosses `/`. A forbidden import matches any import whose dotted module has, as one of its parts, the last directory
 (or module) the target layer's globs name: `app/services/**` stands for any `…services…` module, `from app import
 services` included. A layer the repository leaves out has no rules. Without `rules:` the static stage is exactly
@@ -410,6 +410,10 @@ stage's failures, and a regression fails the stage. The rules and their profile 
 fingerprint. `qg rules check` runs the same check by hand; `--config FILE` takes a YAML file holding only a `rules:`
 mapping instead of the protected verify.yml, to try a repository that has not opted in. Both need `semgrep` on
 `PATH` (the audit's pinned 1.183.0).
+
+`enforce: false` is the rollout mode: in a run the static stage still checks, logs every regression and the summary
+(marked `(advisory)`) to `static.log` and records the `qg rules check` command, but the check never fails the stage;
+`qg rules check` still exits 1 on a regression.
 
 ## Mutant hunt
 

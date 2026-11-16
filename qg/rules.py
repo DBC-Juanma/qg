@@ -463,7 +463,8 @@ def stage_base(repo: str, base: str, sha: str) -> str:
 def in_stage(
     box: Sandbox, rules: Rules, base: str, seconds: float, result: StageResult
 ) -> StageResult:
-    """Adds the ratchet to the static stage's `result`: logged, a regression failing the stage."""
+    """Adds the ratchet to the static stage's `result`: logged, a regression failing the stage
+    unless `rules.enforce` is off, which only reports it."""
     verdict = check(
         box.repo,
         rules,
@@ -474,22 +475,23 @@ def in_stage(
         box.run_dir,
     )
     lines = [str(hit) for hit in verdict.regressions]
+    summary = verdict.summary if rules.enforce else f"{verdict.summary} (advisory)"
     with (paths.logs_dir(box.run_id) / "static.log").open("a") as log:
-        log.write("".join(f"{line}\n" for line in [f"$ {STAGE_COMMAND}", *lines, verdict.summary]))
+        log.write("".join(f"{line}\n" for line in [f"$ {STAGE_COMMAND}", *lines, summary]))
+    blocking = rules.enforce and not verdict.passed
     run = CommandRun(
         command=STAGE_COMMAND,
-        code=0 if verdict.passed else 1,
+        code=1 if blocking else 0,
         tool=None,
         passed=0,
         failed=0,
         skipped=0,
-        summary=verdict.summary,
+        summary=summary,
     )
-    status = result.status if verdict.passed else "failed"
     return replace(
         result,
-        status=status,
-        summary=f"{result.summary}; {verdict.summary}",
-        failures=[*result.failures, *lines][:MAX_FAILURES],
+        status="failed" if blocking else result.status,
+        summary=f"{result.summary}; {summary}",
+        failures=[*result.failures, *(lines if rules.enforce else [])][:MAX_FAILURES],
         commands=[*result.commands, run],
     )
