@@ -399,7 +399,10 @@ It then proposes the configuration and prints it as a unified diff:
 - **verify.yml at the protected ref**: only the optional sections it lacks, appended to its text, which survives byte
   for byte (comments and formatting included): `rules:` with the detected layers and tests and `enforce: false`, so
   the first rollout is advisory, and `lite:` when `affected.backend` exists, its command copied from
-  `affected.backend.command` and `tests` each unit-test directory and its `/**` glob, since an affected map may list
+  `affected.backend.command` without the pytest-xdist options after its `pytest` word (`-n`, `--numprocesses`,
+  `--dist`, with their values; a command with an unclosed quote or a `$(…)` or backtick substitution is copied as is), so the tests run in
+  one process: for a small selection, workers each importing the application cost more time and memory than they
+  save. Its `tests` are each unit-test directory and its `/**` glob, since an affected map may list
   the directory itself (left out, and said so, when there is no unit-test directory). With both present it proposes nothing: already configured.
 - **no verify.yml**: a whole minimal file (`uv sync --frozen`, the yarn packages, a Postgres image and database, ruff
   as the static stage when the project uses it, pytest on the test directories as the backend stage, prod and
@@ -498,11 +501,9 @@ There is no Postgres container, no app stack, no agent (simplify, QA, audit, pro
 checked out in a detached worktree under `~/.local/state/qg/lite/<id>/src` with the cached Python and node
 dependencies (the same caches as the runner, built on a miss), and removed afterwards; uncommitted changes are never
 checked, and the output says so when the worktree has some. verify.yml is read from the protected ref, as for a run.
-Commands run in systemd scopes like the runner's (`qg-lite-<id>-<lane>-<n>`): static and rules with the static lane's
-limits, the tests also capped like the static lane. At most 2 lite checks run at once on the machine (the others print
-`waiting for a lite slot` and wait), each starts only when MemAvailable fits the biggest scope peak of the
-repository's last ten lite checks (`lite/peaks.json`; with none, the tests cap) by the runner's rule, and lite runs at
-nice 10 in the idle I/O class. It never takes a runner slot, so a queued verification is never held behind it.
+Commands run in systemd scopes like the runner's (`qg-lite-<id>-<lane>-<n>`) with the lane limits exactly as
+verify.yml configures them: lite adds no limit and no memory wait of its own. At most 2 lite checks run at once on the
+machine (the others print `waiting for a lite slot` and wait), and lite runs at nice 10 in the idle I/O class. It never takes a runner slot, so a queued verification is never held behind it.
 
 The output is one line per step (passed, failed, skipped or info, with its time), the lines to fix under a failed
 step, and one summary line: `GREEN` (exit 0) or `RED: <steps> failed` (exit 1). Logs stay in

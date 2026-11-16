@@ -29,6 +29,9 @@ POSTGRES_IMAGE = "postgres:16-alpine"
 NODE_INSTALL = "yarn --cwd {pkg} install --frozen-lockfile"
 RUFF = ("uv run ruff check .", "uv run ruff format --check .")
 DB_PLACEHOLDERS = ("{db}", "{pg_port}", "{pg_url_async}", "{pg_url_sync}")
+SHELL_WORD = r"""(?:[^\s'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+"""
+XDIST_VALUED = ("-n", "--numprocesses", "--dist")
+XDIST_GLUED = re.compile(r"-n.+|--(?:numprocesses|dist)=.*")
 NO_NEWLINE = "\\ No newline at end of file"
 
 
@@ -135,8 +138,37 @@ def _rules_section(found: Detected, profile: str) -> dict[str, Any]:
     return section
 
 
+def _serial(command: str) -> str:
+    """Returns `command` without the pytest-xdist options after its `pytest` word, the rest
+    verbatim; `command` unchanged when its shell words cannot be told apart."""
+    words = list(re.finditer(SHELL_WORD, command))
+    bounds = [0, *(edge for word in words for edge in (word.start(), word.end())), len(command)]
+    gaps = (command[bounds[i] : bounds[i + 1]] for i in range(0, len(bounds), 2))
+    if "$(" in command or "`" in command or any(gap.strip() for gap in gaps):
+        return command
+    names = [word.group() for word in words]
+    pytest = [i for i, name in enumerate(names) if PurePosixPath(name).name == "pytest"]
+    index = pytest[0] + 1 if pytest else len(names)
+    dropped: set[int] = set()
+    while index < len(names):
+        if names[index] in XDIST_VALUED and index + 1 < len(names):
+            dropped |= {index, index + 1}
+            index += 2
+            continue
+        if XDIST_GLUED.fullmatch(names[index]):
+            dropped.add(index)
+        index += 1
+    kept, end = [], 0
+    for index, word in enumerate(words):
+        if index not in dropped:
+            kept.append(command[end : word.end()])
+        end = word.end()
+    return "".join(kept) + command[end:]
+
+
 def _lite_section(command: str, found: Detected, review: list[str]) -> dict[str, Any]:
-    """Returns the proposed `lite:` mapping on `affected.backend.command`; notes what to review."""
+    """Returns the proposed `lite:` mapping on `command`, the backend command run in one process;
+    notes what to review."""
     section: dict[str, Any] = {"command": command}
     if found.units:
         section["tests"] = [glob for d in found.units for glob in (d, f"{d}/**")]
@@ -214,7 +246,7 @@ def propose(existing: str | None, found: Detected, name: str, profile: str) -> P
         review.append(f"rules: not proposed: no layer of {profile} found")
     backend = current.affected.backend
     if current.lite is None and backend is not None:
-        sections["lite"] = _lite_section(backend.command, found, review)
+        sections["lite"] = _lite_section(_serial(backend.command), found, review)
     elif current.lite is None:
         review.append("lite: not proposed: it needs affected.backend to select the tests")
     added = _dump(sections) if sections else ""
@@ -222,8 +254,8 @@ def propose(existing: str | None, found: Detected, name: str, profile: str) -> P
     text = existing + joint + added if added else existing
     parsed = _validated(text, source)
     if backend is not None and "lite" in sections:
-        if parsed.lite is None or parsed.lite.command != backend.command:
-            die("the proposed lite.command does not read back as affected.backend.command")
+        if parsed.lite is None or parsed.lite.command != _serial(backend.command):
+            die("the proposed lite.command does not read back as it was proposed")
     return Proposal(text, joint + added if added else "", parsed, review)
 
 

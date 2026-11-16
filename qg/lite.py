@@ -3,13 +3,12 @@ only (static commands, the rules ratchet, the affected tests that need no databa
 hunt), in a detached worktree with the cached dependencies and no Postgres, stack or agent.
 
 It never enters the queue and writes nothing under runs/, so no `qg check`, reuse or report can
-ever read it: it gives no deploy verdict. At most SLOTS run at once machine-wide, each one only
-once MemAvailable fits its tests cap.
+ever read it: it gives no deploy verdict. At most SLOTS run at once machine-wide, with the lanes
+exactly as verify.yml configures them.
 """
 
 import fcntl
 import fnmatch
-import json
 import shutil
 import signal
 import time
@@ -27,7 +26,6 @@ from qg import (
     inplace,
     mutants,
     paths,
-    peaks,
     proc,
     rules,
     stages,
@@ -35,10 +33,9 @@ from qg import (
 from qg.config import Config
 from qg.probe import scratch
 from qg.sandbox import Sandbox, install_deps, venv_for
-from qg.util import atomic_write, human, read_tail
+from qg.util import human, read_tail
 
 SLOTS = 2
-PEAKS = "peaks.json"
 PREFIX = "lite-"
 KEEP_SECONDS = 86400
 MUTANT_MINUTES = 2
@@ -90,54 +87,11 @@ def _slot() -> Iterator[int]:
         time.sleep(admission.POLL_SECONDS)
 
 
-def _history() -> dict[str, list[int]]:
-    """Returns the peak bytes of the last lite checks per repository, newest first."""
-    path = paths.LITE / PEAKS
-    return json.loads(path.read_text()) if path.exists() else {}
-
-
-def _remember(repo: str, peak: int) -> None:
-    """Records the peak of a lite check of `repo`, keeping its last peaks.HISTORY_RUNS."""
-    known = _history()
-    known[repo] = [peak, *known.get(repo, [])][: peaks.HISTORY_RUNS]
-    atomic_write(paths.LITE / PEAKS, json.dumps(known, indent=2) + "\n")
-
-
-@contextmanager
-def _measured(lite_id: str, repo: str) -> Iterator[None]:
-    """Samples the biggest scope of the check while the block runs and records it for `repo`."""
-    seen = [0]
-    try:
-        with peaks.measured(lite_id) as seen:
-            yield
-    finally:
-        if seen[0]:
-            _remember(repo, seen[0])
-
-
-def _wait_for_memory(repo: str, memory_max: str) -> None:
-    """Blocks until MemAvailable admits the check: its measured peak, else its tests cap."""
-    seen = _history().get(repo, [])
-    need = admission.need_for(memory_max, max(seen) if seen else None)
-    told = False
-    while not admission.fits(admission.available_memory(), need):
-        if not told:
-            print(admission.memory_reason(need), flush=True)
-            told = True
-        time.sleep(admission.POLL_SECONDS)
-
-
 def _sweep() -> None:
     """Removes what lite checks older than a day left under the lite directory."""
     for entry in paths.LITE.iterdir():
         if entry.name.startswith(PREFIX) and time.time() - entry.stat().st_mtime > KEEP_SECONDS:
             shutil.rmtree(entry)
-
-
-def limits(cfg: Config) -> dict[str, tuple[str, str]]:
-    """Returns the lane limits of a lite check: the run's, its tests capped like the static lane."""
-    lanes = cfg.resources.lanes
-    return {**lanes, "tests": lanes["static"]}
 
 
 def keeps(cfg: Config, name: str) -> bool:
@@ -308,13 +262,11 @@ def run(where: str, ref: str) -> int:
         print(f"note      {config.VERIFY_PATH} changed in this branch: not used")
     lite_id = f"{PREFIX}{paths.new_run_id()}"
     home = paths.LITE / lite_id
-    lanes = limits(cfg)
     with _slot():
         _sweep()
         (home / "logs").mkdir(parents=True)
-        _wait_for_memory(repo, lanes["tests"][1])
         try:
-            with scratch(repo, sha, home / "src") as src, _measured(lite_id, repo):
+            with scratch(repo, sha, home / "src") as src:
                 box = Sandbox(
                     run_id=lite_id,
                     repo=repo,
@@ -324,7 +276,7 @@ def run(where: str, ref: str) -> int:
                     venv=venv_for(src),
                     db=cfg.postgres.db,
                     ports={},
-                    limits=lanes,
+                    limits=cfg.resources.lanes,
                 )
                 steps = _check(box, cfg, base, changed)
         finally:
