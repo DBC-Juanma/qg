@@ -9,9 +9,11 @@ once MemAvailable fits its tests cap.
 
 import fcntl
 import fnmatch
+import json
 import os
 import shutil
 import signal
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -19,13 +21,27 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import FrameType
 
-from qg import admission, affected, config, git, inplace, mutants, paths, proc, rules, stages
+from qg import (
+    admission,
+    affected,
+    config,
+    git,
+    inplace,
+    mutants,
+    paths,
+    peaks,
+    proc,
+    rules,
+    stages,
+)
 from qg.config import Config
 from qg.probe import scratch
 from qg.sandbox import Sandbox, install_deps, venv_for
-from qg.util import die, human, read_tail
+from qg.util import atomic_write, die, human, read_tail
 
 SLOTS = 2
+PEAKS = "peaks.json"
+SAMPLE_SECONDS = 0.5
 PREFIX = "lite-"
 KEEP_SECONDS = 86400
 MUTANT_MINUTES = 2
@@ -85,9 +101,45 @@ def _slot() -> Iterator[int]:
         time.sleep(admission.POLL_SECONDS)
 
 
-def _wait_for_memory(memory_max: str) -> None:
-    """Blocks until MemAvailable admits a tests scope capped at `memory_max`."""
-    need = admission.need_for(memory_max)
+def _history() -> dict[str, list[int]]:
+    """Returns the peak bytes of the last lite checks per repository, newest first."""
+    path = paths.LITE / PEAKS
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _remember(repo: str, peak: int) -> None:
+    """Records the peak of a lite check of `repo`, keeping its last peaks.HISTORY_RUNS."""
+    known = _history()
+    known[repo] = [peak, *known.get(repo, [])][: peaks.HISTORY_RUNS]
+    atomic_write(paths.LITE / PEAKS, json.dumps(known, indent=2) + "\n")
+
+
+@contextmanager
+def _measured(lite_id: str, repo: str) -> Iterator[None]:
+    """Samples the biggest scope of the check while the block runs and records it for `repo`."""
+    stop = threading.Event()
+    seen = [0]
+
+    def loop() -> None:
+        """Samples the check's live scopes every SAMPLE_SECONDS until `stop`."""
+        while not stop.wait(SAMPLE_SECONDS):
+            seen[0] = max(seen[0], *peaks.sample(lite_id).values(), 0)
+
+    thread = threading.Thread(target=loop, name="lite-peaks", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+        if seen[0]:
+            _remember(repo, seen[0])
+
+
+def _wait_for_memory(repo: str, memory_max: str) -> None:
+    """Blocks until MemAvailable admits the check: its measured peak, else its tests cap."""
+    seen = _history().get(repo, [])
+    need = admission.need_for(memory_max, max(seen) if seen else None)
     told = False
     while not admission.fits(admission.available_memory(), need):
         if not told:
@@ -196,8 +248,10 @@ def tests_step(box: Sandbox, cfg: Config, changed: list[str]) -> Step:
 
 def mutants_step(box: Sandbox, cfg: Config, tests: Step) -> Step:
     """Runs the mutant hunt on the added lines, bounded to MUTANT_MINUTES; it only informs."""
-    if cfg.mutants is None or cfg.lite is None:
-        return Step("mutants", SKIPPED, "verify.yml has no mutants: and lite: sections")
+    if cfg.mutants is None:
+        return Step("mutants", SKIPPED, "verify.yml has no mutants: section")
+    if cfg.lite is None:
+        return Step("mutants", SKIPPED, "needs lite: to pick the tests each mutant runs")
     if tests.status != PASSED:
         return Step("mutants", SKIPPED, "only after the tests passed")
     minutes = min(MUTANT_MINUTES, cfg.mutants.time_limit_minutes)
@@ -274,9 +328,9 @@ def run(where: str, ref: str) -> int:
     with _slot():
         _sweep()
         (home / "logs").mkdir(parents=True)
-        _wait_for_memory(lanes["tests"][1])
+        _wait_for_memory(repo, lanes["tests"][1])
         try:
-            with scratch(repo, sha, home / "src") as src:
+            with scratch(repo, sha, home / "src") as src, _measured(lite_id, repo):
                 box = Sandbox(
                     run_id=lite_id,
                     repo=repo,
