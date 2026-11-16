@@ -18,7 +18,7 @@ import yaml
 
 from qg import config, git, inplace, paths, proc, rules
 from qg.config import VERIFY_PATH, Config, Rules
-from qg.util import atomic_write, die
+from qg.util import die
 
 UV_LOCK = "uv.lock"
 PYPROJECT = "pyproject.toml"
@@ -35,8 +35,8 @@ NO_NEWLINE = "\\ No newline at end of file"
 @dataclass(frozen=True)
 class Detected:
     """What the tree at the protected ref holds: the Python project, the yarn packages (and the
-    node packages qg cannot install), the layers found as path globs, those not found, the test
-    directories and the unit-test directories among them."""
+    node packages qg cannot install), the layers found as path globs, those not found, the globs
+    of the test directories and the unit-test directories among them."""
 
     uv_lock: bool
     ruff: bool
@@ -114,7 +114,7 @@ def detect(repo: str, entries: list[tuple[str, str, str]], profile: rules.Profil
         layers=layers,
         missing=tuple(missing),
         tests=tuple(f"{d}/**" for d in test_dirs),
-        units=tuple(f"{d}/**" for d in units),
+        units=units,
     )
 
 
@@ -139,7 +139,7 @@ def _lite_section(command: str, found: Detected, review: list[str]) -> dict[str,
     """Returns the proposed `lite:` mapping on `affected.backend.command`; notes what to review."""
     section: dict[str, Any] = {"command": command}
     if found.units:
-        section["tests"] = list(found.units)
+        section["tests"] = [glob for d in found.units for glob in (d, f"{d}/**")]
     else:
         review.append(
             "lite.tests left out: no unit-test directory found, so lite runs every affected test; "
@@ -271,7 +271,7 @@ def _write(repo: str, ref: str, existing: bytes | None, proposal: Proposal) -> P
     if target.exists() and target.read_bytes() != existing:
         die(f"{target} differs from {ref}: commit, stash or remove it first")
     target.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(target, proposal.text)
+    target.write_bytes(proposal.text.encode())
     return target
 
 
@@ -339,7 +339,8 @@ def run(repo: str, profile_name: str, write: bool, count: bool) -> int:
     print("next steps:")
     print(f"  1. commit {VERIFY_PATH} to {branch}: qg reads it only from there, qg never commits")
     print(
-        f"  2. before that commit lands, {paths.SERVICE_UNIT} must run a qg that knows these keys"
+        f"  2. before that commit lands, {paths.SERVICE_UNIT} must run a qg that knows these keys: "
+        "restart it after upgrading qg, when no run is in flight"
     )
     print("  3. `qg lite` checks a commit in the foreground: static, rules, Postgres-free tests")
     print(

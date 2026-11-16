@@ -399,8 +399,8 @@ It then proposes the configuration and prints it as a unified diff:
 - **verify.yml at the protected ref**: only the optional sections it lacks, appended to its text, which survives byte
   for byte (comments and formatting included): `rules:` with the detected layers and tests and `enforce: false`, so
   the first rollout is advisory, and `lite:` when `affected.backend` exists, its command copied from
-  `affected.backend.command` and `tests` the unit-test globs (left out, and said so, when there is no unit-test
-  directory). With both present it proposes nothing: already configured.
+  `affected.backend.command` and `tests` each unit-test directory and its `/**` glob, since an affected map may list
+  the directory itself (left out, and said so, when there is no unit-test directory). With both present it proposes nothing: already configured.
 - **no verify.yml**: a whole minimal file (`uv sync --frozen`, the yarn packages, a Postgres image and database, ruff
   as the static stage when the project uses it, pytest on the test directories as the backend stage, prod and
   staging gating those two, and `rules:`). `uv.lock` is required.
