@@ -48,7 +48,7 @@ are capped at 1 GB and 2 cores each outside those scopes. `qg cancel` and the ja
 
 **Affected tests.** `affected` in verify.yml (read from the protected master, never from the branch) maps the changed paths of
 `base..sha` (else against master) to tests: `affected.backend.map` is a list of `{paths: [globs], tests: [pytest paths]}`; the
-`always` list (lint and the core: tenant and workspace isolation, billing, auth and permissions, webhook signatures) runs
+`always` list (the core: tenant and workspace isolation, billing, auth and permissions, webhook signatures) runs
 whatever changed; every changed test module runs; a path in `whole_when` (fixtures, root conftest, lockfile) selects `all`; a
 changed path that maps to nothing is named in the stage summary. `command` must contain `{tests}`. The Postgres `-m pg` lane
 stays in `stages.backend`. `affected.frontend` lists packages with `related` (`{files}`: vitest's module graph, the tests that
@@ -473,7 +473,7 @@ every changed Python file under `stages.simplify.paths` (no test or tooling file
 the merge-base get simple mutations: a comparison swapped (`==`/`!=`, `<`/`>=`, `>`/`<=`, `in`/`not in`,
 `is`/`is not`), `and`/`or`, `True`/`False`, an integer +1, `return x` to `return None`. At most `mutants.max` of
 them, one line at a time, run on a scratch worktree (`runs/<id>/mutants/src`) against the tests
-`affected.backend.map` ties to that file (not the `always` list: its lint tests would kill every mutant without the
+`affected.backend.map` ties to that file (not the `always` list: its tests would kill every mutant without the
 file's own tests saying anything). Only the operator or literal is rewritten in place, so format and comments stay;
 an operator next to a parenthesis or a comment is left alone. Each set of tests runs once unmutated first; a mutant is killed only by a `FAILED` or `ERROR` line that run did not have, so a test that already fails or flakes kills nothing. A mutant those tests still pass is a gap in them. A
 changed file that does not parse is named and skipped, and a crash of the hunt becomes its note. The hunt only reports: the
@@ -578,8 +578,7 @@ What S0 may change is enforced in code after the agent ends, never by the prompt
 (nothing is dropped silently, nothing is committed, `simplify/rejected.diff` keeps the attempt and the report shows it):
 
 - a file must be in `git diff base..sha` and under `stages.simplify.paths` (default the app source directories);
-- never a test, `tests/`, `__tests__/`, `e2e/`, `*.test.*`, `*.spec.*`, snapshot, fixture, `conftest.py`, lint registry or
-  allowlist (they live under `tests/`), `quality-gates-notes.md`, `.claude/`, `.github/`, `.git*`, lockfile;
+- never a test, `tests/`, `__tests__/`, `e2e/`, `*.test.*`, `*.spec.*`, snapshot, fixture, `conftest.py`, `quality-gates-notes.md`, `.claude/`, `.github/`, `.git*`, lockfile;
 - no new file, no file the diff deleted, no symlink (nor a path through one), no submodule, no mode change, no added, removed or
   changed ignored file, no rewrite of the sandbox's `.git` file; the sandbox must be clean before the agent runs;
 - path rules compare NFKC-casefolded components (`Tests/`, fullwidth spellings, `Test_x.py`, `Makefile` are protected too);

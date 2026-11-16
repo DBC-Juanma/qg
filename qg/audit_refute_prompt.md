@@ -11,7 +11,7 @@ For each claim, open the code and check the evidence step by step:
 - Does the entry point exist and can the stated caller reach it? Follow the router, dependencies and middleware.
 - Does each call in the path exist and pass the data as claimed?
 - Is there a guard the lens missed: a dependency that checks the user or tenant, a scope applied in a base query,
-  a manager or repository that filters, a validator, an escape, a signature check, a lint test that forbids it?
+  a manager or repository that filters, a validator, an escape, a signature check, a rule that forbids it?
 - Is the sink really reachable with input the caller controls?
 
 A claim is `refuted` when any step is false or a guard stops it; say which step or guard, with file:line. It is

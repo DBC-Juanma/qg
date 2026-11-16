@@ -10,8 +10,8 @@ breaks together with code elsewhere is.
 Read first:
 
 1. `CLAUDE.md` in the repository root: its architecture, its layering and its security rules.
-2. The lint tests and registries under `tests/unit/lint/` and `tests/integration/lint/` (skim their names and
-   docstrings): what a lint already enforces is not a finding.
+2. The `rules:` section of `.claude/verify.yml`, the static-stage commands and the linter configuration in the
+   repository (ruff, semgrep, import-linter): what a rule already enforces is not a finding.
 3. `{diff_file}`: the commit's message, which says what it meant to do, and its diff on the files below.
 4. `{hits_file}`: one JSON object per line, results of ruff (S, PERF), semgrep, gitleaks and osv-scanner on these
    files, kept only on lines the night adds (osv-scanner lists known vulnerabilities of a lockfile the commit
