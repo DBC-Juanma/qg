@@ -1,0 +1,13 @@
+[Unit]
+Description=qg feature verification runner
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/qg runner
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=%h
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=default.target
