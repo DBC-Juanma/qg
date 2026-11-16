@@ -27,6 +27,7 @@ from qg import (
     release,
     report,
     reuse,
+    rules,
     sandbox,
     simplify,
     stages,
@@ -314,6 +315,9 @@ def _run_command_stage(
         result = stages.run_stress(ctx.box, ctx.cfg, selection, ctx.request.stress)
     else:
         result = stages.run_stage(ctx.box, ctx.cfg, name, selection)
+    if name == "static" and ctx.cfg.rules is not None:
+        seconds = ctx.cfg.timeouts["static"] * 60
+        result = rules.in_stage(ctx.box, ctx.cfg.rules, ctx.request.base, seconds, result)
     hunt = name == "playwright" and ctx.request.mode == "release" and ctx.request.stress == 1
     if hunt and result.status == "failed" and result.failures:
         result = stages.flake_hunt(ctx.box, ctx.cfg, result)

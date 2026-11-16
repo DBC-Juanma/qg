@@ -218,6 +218,8 @@ Run ids are `YYYYMMDD-HHMMSS-xxxx`; every command that takes an id accepts a uni
 | `qg enable` / `qg disable` | Create or remove `~/.local/state/qg/enabled`. |
 | `qg runner` | The daemon loop, in the foreground. systemd runs it. |
 | `qg board` | Writes `~/.local/state/qg/board.html`, a static table of the last run per repo+branch with verdict, findings, stage times and links, and prints its path. |
+| `qg rules check --base SHA --head SHA [--repo PATH] [--config FILE]` | Prints the architecture-rule violations `--head` adds over `--base` (see *Architecture rules*), then one summary line. Exit 0 when it adds none, 1 otherwise. |
+| `qg rules baseline [--repo PATH] [--config FILE]` | Counts every violation in the whole tree at `HEAD`, per rule and for the 20 files that hold most, to track the burn-down. Reads git objects only. |
 | `qg install-service` | Copies `systemd/qg-runner.service` to `~/.config/systemd/user/` and runs `systemctl --user daemon-reload`. Enables and starts nothing. |
 
 ## verify.yml
@@ -282,6 +284,12 @@ probe:                           # optional: the P0 probe and flip (needs affect
 mutants:                         # optional: the mutant hunt after a passing backend stage (needs affected.backend)
   max: 12                        # mutants per run, one changed line at a time across the changed files
   time_limit_minutes: 20         # added to the deadline of a run with the backend stage
+rules:                           # optional: architecture rules in the static stage (see Architecture rules)
+  profile: python-layered
+  layers: {components: ["app/api/**"], managers: ["app/managers/**"], services: ["app/services/**"], repositories: ["app/repositories/**"]}
+  tests: ["tests/**"]
+  markdown_allow: ["docs/**"]
+  disable: []
 teardown: ["<cmd>", ...]
 deploy:
   prod: {stages: [static, backend, frontend, playwright, qa], max_p0: 0, p1_acknowledged: true}
@@ -365,6 +373,40 @@ and model keys are never inherited; plus `UV_PROJECT_ENVIRONMENT` (the cached ve
   style, chore, ci, build, reverts and commits that touch only tests, documents or tooling are left out. The section is
   first in the plan, so a truncated plan never loses it, and the charter tells the agent to walk those topics as its
   `plan:` flows.
+
+## Architecture rules
+
+A profile is data bundled with qg: `qg/profiles/<name>.yml` names the layers of an architecture, the imports
+forbidden between them, banned patterns per layer and two hygiene rules, each with an id and a message naming the
+fix. `python-layered` describes a layered Python backend (components → managers → services → repositories): a
+component may not import a service or a repository, a service may not import a manager or a component, a repository
+may not import a service, manager or component; `.model_dump()` and `.dict()` are banned in managers and services,
+swallowed exceptions (`except Exception: pass`) and bare `except:` in every layer, `TestClient` in tests, SQLite URLs
+and imports outside tests; no new code comment (docstrings, `# noqa`, `# type:`, `# pragma`, shebang and encoding
+lines are not comments here) and no new `.md` file outside the allow-list (`README.md`, `CLAUDE.md`, `CHANGELOG.md`,
+`LICENSE.md` at any depth, plus `markdown_allow`).
+
+A repository opts in with the top-level `rules:` of its verify.yml: `profile`, `layers` (each profile layer it has,
+mapped to path globs), `tests` (globs), `markdown_allow` (globs) and `disable` (rule ids). Globs are `fnmatch`, so `*`
+crosses `/`. A forbidden import matches any import whose dotted module has, as one of its parts, the last directory
+(or module) the target layer's globs name: `app/services/**` stands for any `…services…` module, `from app import
+services` included. A layer the repository leaves out has no rules. Without `rules:` the static stage is exactly
+its commands.
+
+**The ratchet.** No baseline is stored. The check lists the files `base..head` adds, modifies or renames, reads each
+one from git at the base and at the head into a temporary directory, runs the profile's generated semgrep rules on
+both sides in one semgrep call, and fails only where the head holds more matches of one rule in one file than the
+base held (a new file starts at 0, a renamed one is compared with its old path); it never keys on line numbers. For a
+regression it prints every head-side match of that rule in that file as `path:line rule-id message`. Comments count
+only on the lines the change adds and markdown only for added files. Code moved from one file into a new one counts
+as new in the new file. Nothing is written into the repository.
+
+In a run, the check follows the static stage's commands: its base is the run's `--base`, else the merge-base of the
+commit with the base branch; semgrep runs in the static lane's scope, its lines go to `logs/static.log` and the
+stage's failures, and a regression fails the stage. The rules and their profile are part of the static stage's reuse
+fingerprint. `qg rules check` runs the same check by hand; `--config FILE` takes a YAML file holding only a `rules:`
+mapping instead of the protected verify.yml, to try a repository that has not opted in. Both need `semgrep` on
+`PATH` (the audit's pinned 1.183.0).
 
 ## Mutant hunt
 

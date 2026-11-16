@@ -1,0 +1,95 @@
+description: >-
+  Layered Python backend: components (HTTP API, websocket, CLI) call managers, managers call
+  services, services call repositories, repositories reach the database.
+layers: [components, managers, services, repositories]
+forbidden_imports:
+  - id: components-import-services
+    from: [components]
+    to: services
+    message: components reach a domain through its manager; import the domain's manager instead of the service
+  - id: components-import-repositories
+    from: [components]
+    to: repositories
+    message: components reach a domain through its manager; import the domain's manager instead of the repository
+  - id: services-import-managers
+    from: [services]
+    to: managers
+    message: services sit below managers; move the call up into the manager instead of importing it here
+  - id: services-import-components
+    from: [services]
+    to: components
+    message: services know nothing of their callers; move this into the component or its manager
+  - id: repositories-import-services
+    from: [repositories]
+    to: services
+    message: repositories only access data; move the logic into the service that calls the repository
+  - id: repositories-import-managers
+    from: [repositories]
+    to: managers
+    message: repositories only access data; move the logic into the manager that calls the service
+  - id: repositories-import-components
+    from: [repositories]
+    to: components
+    message: repositories know nothing of their callers; move this into the component
+banned:
+  - id: model-dump
+    layers: [managers, services]
+    message: return the Pydantic model; FastAPI serialises it
+    pattern-either:
+      - pattern: $X.model_dump(...)
+      - pattern: $X.dict(...)
+  - id: swallowed-exception
+    layers: [components, managers, services, repositories]
+    message: let it raise; no fallbacks
+    pattern-either:
+      - pattern: |
+          try:
+            ...
+          except Exception:
+            pass
+      - pattern: |
+          try:
+            ...
+          except Exception as $E:
+            pass
+      - pattern: |
+          try:
+            ...
+          except BaseException:
+            pass
+      - pattern: |
+          try:
+            ...
+          except BaseException as $E:
+            pass
+  - id: bare-except
+    layers: [components, managers, services, repositories]
+    message: let it raise; no fallbacks
+    pattern: |
+      try:
+        ...
+      except:
+        ...
+  - id: testclient-in-tests
+    layers: [tests]
+    message: unit-test with the seam mocked; whole flows go to Playwright
+    pattern-either:
+      - pattern: from $M import TestClient
+      - pattern: import $M.testclient
+  - id: sqlite-outside-tests
+    outside: [tests]
+    message: PostgreSQL always
+    pattern-either:
+      - pattern-regex: sqlite(\+\w+)?://
+      - pattern: import sqlite3
+      - pattern: import aiosqlite
+      - pattern: from sqlite3 import $X
+      - pattern: from aiosqlite import $X
+hygiene:
+  comments:
+    id: new-comment
+    message: no new code comments; say it in a name, or a one-line docstring
+  markdown:
+    id: new-markdown
+    message: no new markdown files; usage goes in the README, plans and notes stay out of the repository
+    allow: [README.md, "*/README.md", CLAUDE.md, "*/CLAUDE.md", CHANGELOG.md, LICENSE.md]

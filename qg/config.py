@@ -71,6 +71,7 @@ DEFAULT_MEMORY_MAX = "1G"
 CPU_QUOTA = re.compile(r"^\d+%$")
 MEMORY_MAX = re.compile(r"^(\d+[KMGT]?|infinity)$")
 SIZE_UNITS = {"": 1, "K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40}
+PROFILE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
 class StrictLoader(yaml.SafeLoader):
@@ -288,6 +289,17 @@ class Audit:
 
 
 @dataclass(frozen=True)
+class Rules:
+    """The architecture rules of the static stage: a bundled profile and this repo's paths."""
+
+    profile: str
+    layers: dict[str, tuple[str, ...]]
+    tests: tuple[str, ...] = ()
+    markdown_allow: tuple[str, ...] = ()
+    disable: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Policy:
     """What an environment demands of a run: stages and the findings it tolerates.
 
@@ -320,6 +332,7 @@ class Config:
     probe: Probe | None = None
     mutants: Mutants | None = None
     audit: Audit | None = None
+    rules: Rules | None = None
 
     def configured(self, stage: str) -> bool:
         """Tells whether verify.yml configures `stage`; simplify needs no configuration."""
@@ -715,6 +728,38 @@ def _audit(reader: Reader, raw: Any) -> Audit:
     )
 
 
+def _rules(reader: Reader, raw: Any) -> Rules:
+    """Validates the top-level `rules` section; the profile checks its names when it runs."""
+    section = reader.mapping(
+        raw,
+        "rules",
+        required=("profile", "layers"),
+        optional=("tests", "markdown_allow", "disable"),
+    )
+    profile = reader.text(section["profile"], "rules.profile")
+    if not PROFILE.match(profile):
+        reader.fail("rules.profile", f"{profile!r} is not a profile name")
+    layers = section["layers"]
+    if not isinstance(layers, dict) or not layers:
+        reader.fail("rules.layers", "expected a mapping of layer names to lists of path globs")
+    return Rules(
+        profile=profile,
+        layers={
+            reader.text(name, "rules.layers"): reader.texts(globs, f"rules.layers.{name}")
+            for name, globs in layers.items()
+        },
+        tests=reader.texts(section.get("tests", []), "rules.tests"),
+        markdown_allow=reader.texts(section.get("markdown_allow", []), "rules.markdown_allow"),
+        disable=reader.texts(section.get("disable", []), "rules.disable"),
+    )
+
+
+def parse_rules(raw: Any, source: str) -> Rules:
+    """Validates a document holding only a top-level `rules` mapping; returns its Rules."""
+    reader = Reader(source)
+    return _rules(reader, reader.mapping(raw, "<root>", required=("rules",))["rules"])
+
+
 def _policy(reader: Reader, env: str, raw: Any) -> Policy:
     """Validates deploy.<env>."""
     path = f"deploy.{env}"
@@ -754,6 +799,7 @@ def parse(raw: Any, source: str) -> Config:
             "probe",
             "mutants",
             "audit",
+            "rules",
         ),
     )
     if top["version"] != 1:
@@ -852,6 +898,7 @@ def parse(raw: Any, source: str) -> Config:
         probe=_probe(reader, top["probe"], affected) if "probe" in top else None,
         mutants=_mutants(reader, top["mutants"], affected) if "mutants" in top else None,
         audit=_audit(reader, top["audit"]) if "audit" in top else None,
+        rules=_rules(reader, top["rules"]) if "rules" in top else None,
     )
     for env, policy in deploy.items():
         for stage in policy.stages:

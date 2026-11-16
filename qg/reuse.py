@@ -10,7 +10,7 @@ import shutil
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from qg import config, git, paths, phase_scope, queue, report
+from qg import config, git, paths, phase_scope, queue, report, rules
 from qg.config import COMMAND_STAGES, Config
 from qg.queue import Request, RunState, StageState
 from qg.sandbox import ENV_ALLOWED
@@ -41,7 +41,7 @@ def fingerprint(
     The tree, the stage's commands from the protected configuration, the dependency and database
     configuration, the env allowlist, and for Playwright the specs and for the QA pass its whole
     configuration and the plan text, and for backend and frontend the affected-test mapping and
-    the tests it selected.
+    the tests it selected, and for static its rules and their profile when verify.yml sets them.
     """
     extra: object = None
     if stage == "playwright":
@@ -50,6 +50,8 @@ def fingerprint(
         extra = {"affected": asdict(cfg.affected), "selected": list(selected)}
     elif stage == "qa":
         extra = {"qa": asdict(cfg.qa_scaled(scale)), "plan": plan}
+    elif stage == "static" and cfg.rules is not None:
+        extra = {"rules": asdict(cfg.rules), "profile": rules.profile_text(cfg.rules.profile)}
     body = {
         "stage": stage,
         "tree": tree,

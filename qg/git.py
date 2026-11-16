@@ -119,6 +119,35 @@ def show(repo: str, sha: str, path: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def contents(repo: str, sha: str, names: list[str]) -> dict[str, bytes]:
+    """Returns the bytes of each file of `names` at commit `sha`, read by one cat-file process."""
+    if not names:
+        return {}
+    asked = "".join(f"{sha}:{name}\n" for name in names).encode()
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "cat-file", "--batch"],
+            input=asked,
+            capture_output=True,
+            check=False,
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        die(f"git cat-file --batch timed out after {GIT_TIMEOUT:g}s in {repo}")
+    if result.returncode != 0:
+        die(f"git cat-file --batch failed in {repo}: {result.stderr.decode(errors='replace')}")
+    data, found, at = result.stdout, {}, 0
+    for name in names:
+        end = data.index(b"\n", at)
+        header = data[at:end].split()
+        if len(header) != 3 or header[1] != b"blob":
+            die(f"{sha[:12]}:{name} is not a file in {repo}")
+        start = end + 1
+        found[name] = data[start : start + int(header[2])]
+        at = start + int(header[2]) + 1
+    return found
+
+
 def ref_exists(repo: str, ref: str) -> bool:
     """Tells whether `ref` names a commit in `repo`."""
     check = _git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}")

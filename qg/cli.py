@@ -33,6 +33,7 @@ from qg import (
     queue,
     release,
     report,
+    rules,
     runner,
     sandbox,
     settings,
@@ -1206,6 +1207,47 @@ def cmd_audit_rules(args: argparse.Namespace) -> int:
     return 0
 
 
+def _rules_of(repo: str, path: str | None, sha: str) -> config.Rules:
+    """Returns the rules of the --config file, else of the protected verify.yml; exits on none."""
+    if path:
+        if not Path(path).is_file():
+            die(f"--config {path} is not a file")
+        return config.parse_rules(config.load_yaml(Path(path).read_text(), path), path)
+    found = config.load(repo, sha).config.rules
+    if found is None:
+        die(f"{config.VERIFY_PATH} of {repo} has no rules: section; pass --config FILE")
+    return found
+
+
+def cmd_rules_check(args: argparse.Namespace) -> int:
+    """Prints the rule violations --head adds over --base; exit 0 when none, 1 otherwise."""
+    base = git.resolve_commit(args.repo, args.base)
+    head = git.resolve_commit(args.repo, args.head)
+    verdict = rules.check(args.repo, _rules_of(args.repo, args.config, head), base, head)
+    for hit in verdict.regressions:
+        print(hit)
+    print(verdict.summary)
+    return 0 if verdict.passed else 1
+
+
+def cmd_rules_baseline(args: argparse.Namespace) -> int:
+    """Prints the violations of the whole tree at HEAD per rule and the files holding most."""
+    head = git.resolve_commit(args.repo, "HEAD")
+    counts = rules.baseline(args.repo, _rules_of(args.repo, args.config, head), head)
+    per_rule: dict[str, int] = {}
+    per_file: dict[str, int] = {}
+    for (rule, name), count in counts.items():
+        per_rule[rule] = per_rule.get(rule, 0) + count
+        per_file[name] = per_file.get(name, 0) + count
+    print(f"rules at {head[:12]}: {sum(counts.values())} violation(s) in {len(per_file)} file(s)")
+    for rule, count in sorted(per_rule.items(), key=lambda item: (-item[1], item[0])):
+        print(f"  {count:6d}  {rule}")
+    print("top files:")
+    for name, count in sorted(per_file.items(), key=lambda item: (-item[1], item[0]))[:20]:
+        print(f"  {count:6d}  {name}")
+    return 0
+
+
 def cmd_simplify_decide(args: argparse.Namespace) -> int:
     """Records the operator's decision on a simplify queue item: the next pass fixes or skips it."""
     repo = git.canonical_repo(args.repo)
@@ -1760,6 +1802,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--severity", default="", help="only these severities, e.g. P0,P1")
 
     command("audit-rules", cmd_audit_rules, "download the semgrep rules of the nightly audit")
+
+    p = sub.add_parser("rules", help="architecture rules: the ratchet and the whole-repo count")
+    checks = p.add_subparsers(dest="rules_command", metavar="<rules command>", required=True)
+    p = checks.add_parser(
+        "check", help="exit 1 when --head adds rule violations over --base, per rule and file"
+    )
+    p.set_defaults(handler=cmd_rules_check)
+    p.add_argument("--repo", default=".", help="repository path (default: current directory)")
+    p.add_argument("--base", required=True, help="the commit the change starts from")
+    p.add_argument("--head", required=True, help="the commit of the change")
+    p.add_argument("--config", help="a YAML file holding only `rules:`, used instead of verify.yml")
+    p = checks.add_parser("baseline", help="count every violation at HEAD: per rule, top files")
+    p.set_defaults(handler=cmd_rules_baseline)
+    p.add_argument("--repo", default=".", help="repository path (default: current directory)")
+    p.add_argument("--config", help="a YAML file holding only `rules:`, used instead of verify.yml")
 
     p = command(
         "simplify-decide",
