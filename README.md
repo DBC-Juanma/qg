@@ -440,7 +440,8 @@ one commit, typically seconds to a couple of minutes. It runs only the determini
 
 - **static**: the commands of `stages.static`, stopping at the first that fails and printing its output tail;
 - **rules**: the architecture rules ratchet of the commit against its merge-base with the base branch, when
-  verify.yml has `rules:` (`path:line rule-id message` per new violation);
+  verify.yml has `rules:` (`path:line rule-id message` per new violation; with `enforce: false` they are shown as
+  `info` and never fail);
 - **tests**: the affected tests of the change (`affected.backend`) narrowed to the `lite.tests` globs and run with
   `lite.command`, when verify.yml has `lite:`; without it the line says the tests are not configured for lite;
 - **mutants**: the mutant hunt on the added lines with the same narrowed tests, after the tests passed, when
@@ -452,8 +453,9 @@ dependencies (the same caches as the runner, built on a miss), and removed after
 checked, and the output says so when the worktree has some. verify.yml is read from the protected ref, as for a run.
 Commands run in systemd scopes like the runner's (`qg-lite-<id>-<lane>-<n>`): static and rules with the static lane's
 limits, the tests also capped like the static lane. At most 2 lite checks run at once on the machine (the others print
-`waiting for a lite slot` and wait), each starts only when MemAvailable fits its tests cap, and lite runs at nice 10 in
-the idle I/O class. It never takes a runner slot, so a queued verification is never held behind it.
+`waiting for a lite slot` and wait), each starts only when MemAvailable fits the biggest scope peak of the
+repository's last ten lite checks (`lite/peaks.json`; with none, the tests cap) by the runner's rule, and lite runs at
+nice 10 in the idle I/O class. It never takes a runner slot, so a queued verification is never held behind it.
 
 The output is one line per step (passed, failed, skipped or info, with its time), the lines to fix under a failed
 step, and one summary line: `GREEN` (exit 0) or `RED: <steps> failed` (exit 1). Logs stay in

@@ -208,7 +208,8 @@ def static_step(box: Sandbox, cfg: Config) -> Step:
 
 
 def rules_step(box: Sandbox, cfg: Config, base: str) -> Step:
-    """Runs the architecture rules ratchet of `base..sha` in the static lane's scope."""
+    """Runs the architecture rules ratchet of `base..sha` in the static lane's scope; with
+    `rules.enforce` off its violations are shown but never fail."""
     if cfg.rules is None:
         return Step("rules", SKIPPED, "verify.yml has no rules: section")
     verdict = rules.check(
@@ -221,7 +222,11 @@ def rules_step(box: Sandbox, cfg: Config, base: str) -> Step:
         box.run_dir,
     )
     hits = tuple(str(hit) for hit in verdict.regressions)
-    return Step("rules", PASSED if verdict.passed else FAILED, verdict.summary, hits)
+    if verdict.passed:
+        return Step("rules", PASSED, verdict.summary)
+    if not cfg.rules.enforce:
+        return Step("rules", INFO, f"{verdict.summary} (advisory)", hits)
+    return Step("rules", FAILED, verdict.summary, hits)
 
 
 def tests_step(box: Sandbox, cfg: Config, changed: list[str]) -> Step:
