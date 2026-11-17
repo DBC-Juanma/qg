@@ -127,7 +127,8 @@ def _preempt_nightly(running: list[RunState], waiting: list[RunState]) -> None:
         return
     for run in running:
         marker = paths.preempted_file(run.id)
-        if run.mode == "nightly" and not run.cancel_requested and not marker.exists():
+        stopping = run.cancel_requested or run.deadline_exceeded or marker.exists()
+        if run.mode == "nightly" and not stopping:
             atomic_write(marker, verification.id)
             proc.stop_scope(run.id)
 

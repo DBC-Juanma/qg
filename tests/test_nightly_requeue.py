@@ -241,3 +241,23 @@ def test_a_failed_run_lends_a_stage_failure_only_when_no_command_was_killed(
 
     assert queue.load(N1).status == "failed"
     assert (found is not None) is lent
+
+
+def test_a_preempted_nightly_begins_no_further_stage(repo: Path, stopped: list[str]) -> None:
+    running(asked(repo, N1), StageState(status="pending"))
+    preempt(N1)
+
+    with pytest.raises(proc.Cancelled):
+        executor._begin(N1, "backend")
+
+    assert queue.load(N1).stages["backend"].status == "pending"
+
+
+def test_a_nightly_past_its_deadline_is_never_preempted(repo: Path, stopped: list[str]) -> None:
+    running(asked(repo, N1), StageState(status="running"))
+    queue.update(N1, lambda state: setattr(state, "deadline_exceeded", True))
+
+    preempt(N1)
+
+    assert stopped == []
+    assert executor.preempted_for(N1) is None

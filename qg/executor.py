@@ -48,10 +48,11 @@ def _terminate(signum: int, frame: FrameType | None) -> None:
 
 
 def _begin(run_id: str, name: str) -> None:
-    """Marks stage `name` running; raises Cancelled when the operator asked to cancel the run."""
+    """Marks stage `name` running; raises Cancelled when the operator asked to cancel the run or
+    a verification preempted it."""
 
     def apply(state: RunState) -> None:
-        if state.cancel_requested:
+        if state.cancel_requested or preempted_for(run_id):
             raise proc.Cancelled
         state.stages[name].status = "running"
         state.stages[name].started = now_iso()
@@ -151,7 +152,7 @@ def _end_reused(
     """Records stage `name` as passed by reuse of run `source`; S0 also carries its commit."""
 
     def apply(state: RunState) -> None:
-        if state.cancel_requested:
+        if state.cancel_requested or preempted_for(run_id):
             raise proc.Cancelled
         state.stages[name] = reuse.reused(held, source, wanted, now_iso())
         if simplified is not None and simplified.ref:
