@@ -524,17 +524,12 @@ def containers(run_id: str) -> list[str]:
 
 
 def services_unit(run_id: str) -> str:
-    """Returns the name of the transient unit that holds the run's `services` up."""
+    """Returns the transient unit name that holds the run's services."""
     return f"qg-{run_id}-services.service"
 
 
 def hold_services(run_id: str, units: tuple[str, ...]) -> None:
-    """Starts `units` for the run and holds them until `release_services`; a second call is a no-op.
-
-    A transient unit of the run Requires and is ordered After each unit, so `systemd-run` returns
-    once they are started (and ready, when they wait for it in ExecStartPost). Units with
-    StopWhenUnneeded=yes stop when the last run holding them releases them.
-    """
+    """Starts `units` for `run_id` until release_services; raises Infrastructure on failure."""
     holder = services_unit(run_id)
     if (
         not units

@@ -821,7 +821,7 @@ def stored_policy(raw: Any, env: str, source: str) -> Policy:
 
 
 def _services(reader: Reader, raw: Any) -> tuple[str, ...]:
-    """Checks `services`: names of systemd user units (`<name>.service`) the app stacks need."""
+    """Returns the validated `services` unit names."""
     units = reader.texts(raw, "services")
     for index, unit in enumerate(units):
         if not SERVICE_UNIT.fullmatch(unit):
