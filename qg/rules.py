@@ -5,6 +5,7 @@ The ratchet stores no baseline: the files a change touches are read from git at 
 the head, scanned alike, and the check fails only where the head holds more violations of one rule
 in one file than the base did. Comments and markdown count only what the change adds."""
 
+import ast
 import fnmatch
 import io
 import itertools
@@ -23,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from qg import git, paths, peaks, proc
+from qg import git, jscomments, paths, peaks, proc
 from qg.audit import RULE
 from qg.config import DEFAULT_LANE_LIMITS, Reader, Rules, load_yaml
 from qg.queue import CommandRun
@@ -33,6 +34,8 @@ from qg.util import atomic_write, die, human, now_iso
 
 PROFILES = Path(__file__).parent / "profiles"
 SOURCE_SUFFIX = ".py"
+COMMENTED_SUFFIXES = (SOURCE_SUFFIX, *jscomments.SUFFIXES)
+DOCUMENTED = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 MARKDOWN_SUFFIX = ".md"
 TESTS = "tests"
 SEMGREP_KEYS = ("pattern", "pattern-either", "patterns", "pattern-regex")
@@ -325,21 +328,40 @@ def scan(
     return found
 
 
+def docstring_lines(text: str, name: str) -> set[int]:
+    """Returns the lines of the module, class and function docstrings of `text` longer than one."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError) as exc:
+        die(f"{name} cannot be parsed: {exc}")
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, DOCUMENTED) or not node.body:
+            continue
+        first = node.body[0]
+        literal = isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+        if literal and isinstance(first.value.value, str) and first.end_lineno != first.lineno:
+            lines.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    return lines
+
+
 def comment_lines(text: str, name: str) -> list[int]:
-    """Returns the lines of `text` holding a comment that is not a pragma, shebang or encoding."""
+    """Returns the lines of `text` (path `name`) holding a comment or a docstring of 2+ lines."""
+    if name.endswith(jscomments.SUFFIXES):
+        return jscomments.comment_lines(text, name)
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except (tokenize.TokenError, SyntaxError) as exc:
         die(f"{name} cannot be tokenized: {exc}")
-    lines = []
+    lines = docstring_lines(text, name)
     for token in tokens:
         if token.type != tokenize.COMMENT:
             continue
         row, body = token.start[0], token.string
         header = row == 1 and body.startswith("#!") or row <= 2 and ENCODING.match(body)
         if not header and not PRAGMA.match(body):
-            lines.append(row)
-    return lines
+            lines.add(row)
+    return sorted(lines)
 
 
 def safe_path(name: str) -> str:
@@ -393,20 +415,27 @@ def check(
         safe_path(new)
         if old:
             safe_path(old)
-    sources = {
+    commented = {
         new: old_oid if old_mode in REGULAR else ""
         for _, old_mode, old_oid, new_mode, new_oid, _, new in changed
-        if new.endswith(SOURCE_SUFFIX) and new_mode in REGULAR
+        if new.endswith(COMMENTED_SUFFIXES) and new_mode in REGULAR
     }
+    sources = {new: old for new, old in commented.items() if new.endswith(SOURCE_SUFFIX)}
+    if profile.comments is None:
+        commented = sources
     blob = {new: new_oid for *_, new_oid, _, new in changed}
     regressions: list[Hit] = []
     fixed = 0
     with tempfile.TemporaryDirectory(prefix="qg-rules-", dir=workdir) as tmp:
         root = Path(tmp)
-        heads = {f"head/{new}": blob[new] for new in sources}
+        heads = {f"head/{new}": blob[new] for new in commented}
         bases = {f"base/{new}": old for new, old in sources.items() if old}
         materialise(repo, {**heads, **bases}, root)
-        names = {target: target.split("/", 1)[1] for target in (*heads, *bases)}
+        names = {
+            target: target.split("/", 1)[1]
+            for target in (*heads, *bases)
+            if target.endswith(SOURCE_SUFFIX)
+        }
         hits = scan(profile, root, names, wrap, seconds)
         for new in sources:
             after = Counter(hit.rule for hit in hits[f"head/{new}"])
@@ -416,7 +445,7 @@ def check(
                 if after[rule] > before[rule]:
                     regressions += [hit for hit in hits[f"head/{new}"] if hit.rule == rule]
         if profile.comments is not None:
-            for new, old in sources.items():
+            for new, old in commented.items():
                 text = (root / f"head/{new}").read_text(errors="replace")
                 added = added_lines(repo, old, blob[new], text)
                 regressions += [
@@ -450,12 +479,13 @@ def baseline(
     tracked = [path for _, _, path in entries]
     if len(set(tracked)) != len(tracked):
         die(f"git lists a path twice in the tree of {sha[:12]}: refusing the baseline")
+    suffixes = (SOURCE_SUFFIX,) if profile.comments is None else COMMENTED_SUFFIXES
     regular = {
         safe_path(path): oid
         for mode, oid, path in entries
-        if path.endswith(SOURCE_SUFFIX) and mode in REGULAR
+        if path.endswith(suffixes) and mode in REGULAR
     }
-    sources = list(regular)
+    sources = [name for name in regular if name.endswith(SOURCE_SUFFIX)]
     counts: Counter[tuple[str, str]] = Counter()
     with tempfile.TemporaryDirectory(prefix="qg-rules-") as tmp:
         root = Path(tmp)
@@ -464,7 +494,7 @@ def baseline(
         for found in scan(profile, root, targets, wrap, BASELINE_SECONDS).values():
             counts.update((hit.rule, hit.path) for hit in found)
         if profile.comments is not None:
-            for name in sources:
+            for name in regular:
                 text = (root / f"head/{name}").read_text(errors="replace")
                 counts[(profile.comments.id, name)] += len(comment_lines(text, name))
     if profile.markdown is not None:

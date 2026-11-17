@@ -102,7 +102,7 @@ banned:
 hygiene:
   comments:
     id: new-comment
-    message: no new code comments; say it in a name, or a one-line docstring
+    message: no new code comments; say it in a name, or a one-line docstring (docstrings and JSDoc stay on one line)
   markdown:
     id: new-markdown
     message: no new markdown files; usage goes in the README, plans and notes stay out of the repository

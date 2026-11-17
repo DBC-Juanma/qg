@@ -437,8 +437,12 @@ fix. `python-layered` describes a layered Python backend (components → manager
 component may not import a service or a repository, a service may not import a manager or a component, a repository
 may not import a service, manager or component; `.model_dump()` and `.dict()` are banned in managers and services,
 swallowed exceptions (`except Exception: pass`) and bare `except:` in every layer, `TestClient` in tests, SQLite URLs
-and imports outside tests; no new code comment (docstrings, `# noqa`, `# type:`, `# pragma`, shebang and encoding
-lines are not comments here) and no new `.md` file outside the allow-list (`README.md`, `CLAUDE.md`, `CHANGELOG.md`,
+and imports outside tests; no new code comment (one-line docstrings, `# noqa`, `# type:`, `# pragma`, shebang and
+encoding lines are not comments here; a docstring of two or more lines is) in `.py`, `.ts`, `.tsx`, `.js`, `.jsx`,
+`.mjs` and `.cjs` files, where TS/JS `//` and `/* */` count but text in strings, template literals, regex literals and
+JSX does not, nor tool pragmas (`eslint-disable`, `@ts-expect-error`, `@ts-ignore`, `prettier-ignore`, …), `///
+<reference`, a shebang, or a one-line `/** … */` alone above a function, method, class or exported declaration; and no
+new `.md` file outside the allow-list (`README.md`, `CLAUDE.md`, `CHANGELOG.md`,
 `LICENSE.md` at any depth, plus `markdown_allow`).
 
 A repository opts in with the top-level `rules:` of its verify.yml: `profile`, `layers` (each profile layer it has,
