@@ -25,7 +25,7 @@ from qg import (
 )
 from qg.config import Resources
 from qg.queue import RunState
-from qg.util import now_iso, parse_iso
+from qg.util import atomic_write, now_iso, parse_iso
 
 TICK_SECONDS = 2
 JANITOR_SECONDS = 600
@@ -117,12 +117,19 @@ def _isolated(run_id: str, action: Callable[[], None]) -> None:
 
 
 def _preempt_nightly(running: list[RunState], waiting: list[RunState]) -> None:
-    """Cancels a running nightly run when a verification waits, so it never blocks a deploy."""
+    """Stops a running nightly run when a verification waits, so it never blocks a deploy.
+
+    The marker names the verification; the executor then queues the nightly run again with what
+    it passed (see `executor.requeue`), never as a cancel.
+    """
+    verification = next((other for other in waiting if other.mode != "nightly"), None)
+    if verification is None:
+        return
     for run in running:
-        if run.mode == "nightly" and not run.cancel_requested:
-            if any(other.mode != "nightly" for other in waiting):
-                queue.update(run.id, lambda state: setattr(state, "cancel_requested", True))
-                proc.stop_scope(run.id)
+        marker = paths.preempted_file(run.id)
+        if run.mode == "nightly" and not run.cancel_requested and not marker.exists():
+            atomic_write(marker, verification.id)
+            proc.stop_scope(run.id)
 
 
 def _first_need(run: RunState) -> admission.Need:
@@ -170,8 +177,8 @@ def start_next(children: Children) -> None:
     Four runs at most. Queue order is FIFO, except that when the head's setup does not fit the
     memory now (MemAvailable below its measured need) a later run whose setup fits may start
     first; a run alone on the machine always starts. A nightly run in the way of a verification
-    that cannot start is cancelled (see `_preempt_nightly`). Nothing starts while the free disk of
-    the state root is below 10 GiB; the queued runs say so in `qg status`.
+    that cannot start is stopped and queued again (see `_preempt_nightly`). Nothing starts while
+    the free disk of the state root is below 10 GiB; the queued runs say so in `qg status`.
 
     A plain verification is not a candidate until it has been queued `queue.HOLD_SECONDS`, so a
     newer commit of its cycle supersedes it first; while one is held no nightly run starts and

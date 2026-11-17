@@ -10,6 +10,7 @@ from typing import Any
 
 from qg import config, cycles, paths, phase_scope, queue, redact, release
 from qg.config import Policy
+from qg.proc import KILL_CODES
 from qg.queue import Request, RunState, StageState
 from qg.util import atomic_write, die, elapsed, human, now_iso
 
@@ -329,6 +330,17 @@ def trusted(run: RunState) -> bool:
     )
 
 
+def lends_failure(held: StageState, source: RunState) -> bool:
+    """Tells whether a failed stage of `source` may stand for a run of the same tree.
+
+    Only a run that ended failed lends one, and never a stage a command of which was killed
+    (exit 137, 143): in a cancelled, interrupted or preempted run, or under a kill of the
+    machine, the failure may be the kill itself.
+    """
+    killed = any(command.code in KILL_CODES for command in held.commands)
+    return source.status == "failed" and not killed
+
+
 def reuse_statuses(name: str) -> tuple[str, ...]:
     """Returns the results of a source stage that may be reused: static, tests and Playwright
     lend a failure as well as a pass (same tree, same result); S0 and QA lend a pass only."""
@@ -349,8 +361,8 @@ def _reuse_problem(state: RunState, name: str, source_id: str) -> list[str]:
         return [f"{where}, which is not a trusted finished run of this repository"]
     if held is None or held.status not in reuse_statuses(name):
         return [f"{where}, whose own {name} did not finish"]
-    if held.status == "failed" and source.status != "failed":
-        return [f"{where}, a failure of a run that was {source.status}"]
+    if held.status == "failed" and not lends_failure(held, source):
+        return [f"{where}, a failure of a run that was {source.status} or killed"]
     if name == "simplify":
         same = (
             source.requested_tree == state.requested_tree

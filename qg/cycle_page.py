@@ -681,7 +681,8 @@ def attempt_reason(attempt: Attempt, cycle: Cycle) -> tuple[str, str]:
             )
         return "cancelled by the operator", _tip(attempt.error or "")
     if attempt.status == "interrupted":
-        return "interrupted", _tip(attempt.error or "")
+        preempted = (attempt.error or "").startswith("preempted for run ")
+        return (attempt.error if preempted else "interrupted"), _tip(attempt.error or "")
     failed = next(
         (
             n

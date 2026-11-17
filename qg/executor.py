@@ -534,6 +534,8 @@ def _outcome(state: RunState, exc: BaseException | None) -> tuple[str, str | Non
     if isinstance(exc, proc.Cancelled):
         if state.cancel_requested:
             return "cancelled", "cancelled by the operator"
+        if preempted := preempted_for(state.id):
+            return "interrupted", f"preempted for run {preempted}"
         if state.deadline_exceeded:
             return "interrupted", f"run exceeded its deadline ({state.deadline})"
         return "interrupted", "terminated by a signal"
@@ -545,6 +547,65 @@ def _outcome(state: RunState, exc: BaseException | None) -> tuple[str, str | Non
     if isinstance(exc, proc.Interrupted):
         return "interrupted", str(exc)
     return "error", str(exc) or repr(exc)
+
+
+def preempted_for(run_id: str) -> str | None:
+    """Returns the verification nightly run `run_id` was stopped for (see `runner`), if any."""
+    marker = paths.preempted_file(run_id)
+    if not marker.is_file():
+        return None
+    return marker.read_text().strip() or None
+
+
+def _newer_in_line(state: RunState, mode: str | None = None) -> bool:
+    """Tells whether a newer run of `state`'s line (repo, branch, cycle), of `mode` when given,
+    exists: queuing `state` again would supersede it."""
+    return any(
+        run.id > state.id
+        and (run.repo, run.branch, run.cycle) == (state.repo, state.branch, state.cycle)
+        and mode in (None, run.mode)
+        for run in queue.list_runs()
+    )
+
+
+def _queue_again(state: RunState, request: Request, **changes: object) -> str:
+    """Queues `request` again as a new run whose `retest_of` is `state`; returns its id."""
+    run_id = paths.new_run_id(state.id)
+    plan = paths.plan_file(state.id)
+    own = request.plan == str(plan)
+    again = replace(
+        request,
+        id=run_id,
+        created=now_iso(),
+        retest_of=state.id,
+        plan=str(paths.plan_file(run_id)) if own else request.plan,
+        **changes,
+    )
+    queue.enqueue(again, plan.read_text() if plan.is_file() else None)
+    return run_id
+
+
+def requeue(state: RunState, request: Request, exc: BaseException | None) -> str | None:
+    """Queues again a nightly run stopped for a verification (see `runner._preempt_nightly`);
+    returns its id, None when there is none.
+
+    The new run reuses the stages this one passed and runs the rest, the stage it was stopped in
+    included (see `reuse.stage`); it starts once no verification waits. A cancel by the operator
+    wins, and a newer nightly run of its line is never superseded by it. Every attempt has the
+    run's own deadline.
+    """
+    preempted = preempted_for(state.id)
+    if request.mode != "nightly" or not isinstance(exc, proc.Cancelled):
+        return None
+    if state.cancel_requested or preempted is None:
+        return None
+    with queue.locked():
+        if _newer_in_line(state, "nightly"):
+            return None
+        run_id = _queue_again(state, request, reuse=True)
+        why = f"queued again: run {state.id} was preempted for run {preempted}"
+        queue.set_waiting(run_id, "preempted", why)
+    return run_id
 
 
 def retry(state: RunState, request: Request, status: str, exc: BaseException | None) -> str | None:
@@ -561,40 +622,25 @@ def retry(state: RunState, request: Request, status: str, exc: BaseException | N
     if request.mode != "verify" or request.retest_of:
         return None
     with queue.locked():
-        newer = any(
-            run.id > state.id
-            and (run.repo, run.branch, run.cycle) == (state.repo, state.branch, state.cycle)
-            for run in queue.list_runs()
-        )
-        if newer:
+        if _newer_in_line(state):
             return None
-        run_id = paths.new_run_id(state.id)
-        plan = paths.plan_file(state.id)
-        own = request.plan == str(plan)
-        again = replace(
-            request,
-            id=run_id,
-            created=now_iso(),
-            retest_of=state.id,
-            plan=str(paths.plan_file(run_id)) if own else request.plan,
-        )
-        queue.enqueue(again, plan.read_text() if plan.is_file() else None)
-    return run_id
+        return _queue_again(state, request)
 
 
 def finalize(run_id: str, exc: BaseException | None, clean: bool) -> None:
     """Writes the run's final status, report and cycle page; `exc` is what ended the run, if any.
 
-    A verification a stack failure ended `error` is queued again once (see `retry`); its error
-    names the retry and only the retry's end is announced. A phase run whose QA walked nothing,
-    unless the Claude account stopped it, queues its one automatic retry (see `release.retry`)
-    before its release is judged again, so the release waits for it.
+    A verification a stack failure ended `error` is queued again once (see `retry`), and a nightly
+    run stopped for a verification every time (see `requeue`); its error names the new run and
+    only the new run's end is announced. A phase run whose QA walked nothing, unless the Claude
+    account stopped it, queues its one automatic retry (see `release.retry`) before its release
+    is judged again, so the release waits for it.
     """
     request = queue.load_request(run_id)
     with queue.locked():
         state = queue.load(run_id)
         status, error = _outcome(state, exc)
-        again = retry(state, request, status, exc)
+        again = retry(state, request, status, exc) or requeue(state, request, exc)
         if again:
             error = f"{error}; queued again as run {again}"
         now = now_iso()
@@ -622,7 +668,7 @@ def finalize(run_id: str, exc: BaseException | None, clean: bool) -> None:
         report.refresh(other)
     topics.refresh(run_id)
     if again:
-        print(f"qg: run {run_id} hit a stack failure: queued again as {again}", file=sys.stderr)
+        print(f"qg: run {run_id}: {error}", file=sys.stderr)
     else:
         notify.finished(run_id)
 
@@ -630,7 +676,7 @@ def finalize(run_id: str, exc: BaseException | None, clean: bool) -> None:
 def abandon(run_id: str, reason: str) -> None:
     """Finishes a run whose executor is gone: tears its sandbox down and writes its final state."""
     state = queue.load(run_id)
-    if state.cancel_requested:
+    if state.cancel_requested or preempted_for(run_id):
         exc: BaseException = proc.Cancelled()
     elif state.deadline_exceeded:
         exc = proc.Interrupted(f"run exceeded its deadline ({state.deadline})")

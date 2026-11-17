@@ -286,7 +286,7 @@ Every command that takes a run id accepts a unique prefix. Run ids are `YYYYMMDD
 | `qg verify --feature TEXT [options]` | Queues a verification of one commit; see below. |
 | `qg verify --release --phases F01:P1,F02:P1 --plan-dir DIR [--ref] [--env] [--base]` | Queues one release: see [Release gate](#release-gate). `--feature` is not needed. |
 | `qg lite [--repo PATH] [--ref HEAD]` | Checks a commit now, in the foreground, with static, rules, the affected tests that need no database and the mutant hunt; exit 0 green, 1 red. Never queued and never a deploy verdict (see [Lite verification](#lite-verification)). |
-| `qg nightly [--repo] [--ref REF] [--feature nightly] [--simplify] [--since REF] [--dry-run]` | Queues every test of a commit (default: the protected master), no QA, no base. Never a deploy gate (`qg check` and reuse ignore it), never supersedes a verification, starts only when no verification waits and is cancelled when one arrives. `--simplify`: see [Nightly simplify](#nightly-simplify). |
+| `qg nightly [--repo] [--ref REF] [--feature nightly] [--simplify] [--since REF] [--dry-run]` | Queues every test of a commit (default: the protected master), no QA, no base. Never a deploy gate (`qg check` and reuse ignore it), never supersedes a verification and starts only when no verification waits. One a waiting verification cannot start beside is stopped and queued again (`preempted for run <id>; queued again as run <id>`) as often as that happens; the new run reuses only what its own earlier attempts passed and runs the rest, the stage it was stopped in included. `qg cancel` still cancels it for good. `--simplify`: see [Nightly simplify](#nightly-simplify). |
 | `qg wait <id> [--timeout S]` | Polls `state.json` every 5 s, one line per stage transition, and follows a run that ended `error` and was queued again to its retry. Exit 0 READY, 1 NOT READY, 2 cancelled, interrupted, superseded or error, 3 timeout, 4 while qg is paused. Cheap; if it dies the run goes on. |
 | `qg retest <id> [--allow-manual]` | Queues a new run for the same repo, branch tip and feature with `retest_of=<id>`. Never deduplicated, and nothing is reused. Not for a nightly run. |
 | `qg resume <id> [--allow-manual]` | Re-queues a cancelled, failed, interrupted or errored run for the same requested commit, base, plan and feature (`retest_of=<id>`), reusing every stage that passed (see [Stage reuse](#stage-reuse)). |
@@ -956,7 +956,10 @@ first one that proves out lends the stage. `qg verify --force` and `qg retest` r
   dependency and Postgres configuration, the env allowlist and, for Playwright, the selected specs and the run
   command (for backend and frontend, the selected tests). A fingerprint is stored on every stage a run executes; a
   stage of an older run has it rebuilt from the run's own request and state (not possible for qa, which is then
-  never reused).
+  never reused). They also lend a failure, only from a run that ended failed and never one a command of which was
+  killed (exit 137 or 143): the failure may be the kill itself, so the stage runs again.
+- A **nightly run queued again after a preemption** reuses only from its own earlier attempts (its `retest_of`
+  chain); every other nightly run reuses nothing.
 - **qa** is reused only with the same fingerprint, which adds the whole QA configuration (scaled limits, accounts,
   boot) and the **plan text**, and only from a run of the same cycle with its `qa.json` on disk. The walked flows,
   findings and evidence are copied into the new run (paths rewritten to its directory), refusing symlinks and any
@@ -1296,8 +1299,8 @@ file), `qa/claude-output.json`, `logs/qa-stack.log`, `logs/qa-agent.log`.
   once the runner restarts.
 - Queue order is FIFO, verifications before nightly runs. When the head does not fit, a later run whose setup fits
   starts first. A nightly run starts only when no verification waits, a held one included, and a running nightly run
-  is cancelled when a verification cannot start, but never for a run still held. A run alone on the machine always
-  starts (limits are caps, not use).
+  is stopped and queued again when a verification cannot start, but never for a run still held nor once past its
+  deadline. A run alone on the machine always starts (limits are caps, not use).
 - Once two runs run, the younger run's stages (`static`, `tests` and `qa_stack` lanes) wait for the same
   `MemAvailable` need; the oldest running run never waits, so there is no deadlock. Two runs never run their
   Playwright stage together (`playwright.lock`) and two QA stacks never boot together (`qa-boot.lock`). Nothing is

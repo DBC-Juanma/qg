@@ -45,6 +45,11 @@ def state_file(run_id: str) -> Path:
     return run_dir(run_id) / "state.json"
 
 
+def preempted_file(run_id: str) -> Path:
+    """Returns the marker naming the verification a nightly run was stopped for, when it was."""
+    return run_dir(run_id) / "preempted"
+
+
 def request_file(run_id: str) -> Path:
     """Returns the path of the run's immutable request.json."""
     return run_dir(run_id) / "request.json"

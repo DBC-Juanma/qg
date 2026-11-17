@@ -852,8 +852,10 @@ def _finish_wait(state: RunState) -> int:
 
 
 def _retried_as(state: RunState) -> str | None:
-    """Returns the run that queued `state` again after it ended `error` (see `executor.retry`)."""
-    if state.status != "error":
+    """Returns the run that queued `state` again after it ended `error` (see `executor.retry`) or
+    was preempted (see `executor.requeue`)."""
+    preempted = state.status == "interrupted" and executor.preempted_for(state.id)
+    if state.status != "error" and not preempted:
         return None
     return next((run.id for run in queue.list_runs() if run.retest_of == state.id), None)
 
@@ -879,7 +881,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
             again = _retried_as(state)
             if again is None:
                 return _finish_wait(state)
-            print(f"{_stamp()} run {run_id} error: {state.error}", flush=True)
+            print(f"{_stamp()} run {run_id} {state.status}: {state.error}", flush=True)
             run_id, seen, last = again, {}, ""
             continue
         if state.status == "queued" and not paths.is_enabled():

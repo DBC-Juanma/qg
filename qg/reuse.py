@@ -90,15 +90,33 @@ def _source(run: RunState) -> Source | None:
         return None
 
 
+def _attempts(request: Request, runs: list[RunState]) -> set[str] | None:
+    """Returns the earlier attempts of a nightly run queued again (its `retest_of` chain), the
+    only runs it may reuse from, since every night runs every test anew; None for other runs."""
+    if request.mode != "nightly":
+        return None
+    by_id = {run.id: run for run in runs}
+    chain: set[str] = set()
+    previous = request.retest_of
+    while previous in by_id and previous not in chain:
+        chain.add(previous)
+        previous = by_id[previous].retest_of
+    return chain
+
+
 def sources(request: Request) -> list[Source]:
     """Returns the earlier finished runs of the same repo, env, requested tree and base.
 
-    A run without the hardened runner's provenance is never a source.
+    A run without the hardened runner's provenance is never a source, and a nightly run reuses
+    only from its own earlier attempts.
     """
     found = []
-    for run in sorted(queue.list_runs(), key=lambda r: r.id, reverse=True):
+    runs = queue.list_runs()
+    attempts = _attempts(request, runs)
+    for run in sorted(runs, key=lambda r: r.id, reverse=True):
         same = (
-            run.id < request.id
+            (attempts is None or run.id in attempts)
+            and run.id < request.id
             and run.status in SOURCE_STATUSES
             and run.repo == request.repo
             and run.env == request.env
@@ -157,8 +175,8 @@ def stage(request: Request, name: str, tree: str, wanted: str) -> tuple[str, Sta
     """Returns the source run id and stage of a pass of `name` with the `wanted` fingerprint.
 
     Static, backend, frontend and Playwright also lend a failure: the same tree fails the same way.
-    A failure is lent only by a run that ended failed: in a cancelled or interrupted run the
-    failure may be the kill itself.
+    A failure is lent only by a run that ended failed and only when no command of it was killed
+    (`report.lends_failure`): the failure may be the kill itself.
 
     `tree` is the verified tree of the run now. The QA pass is also bound to the run's cycle, and
     needs its walked flows on disk.
@@ -168,7 +186,7 @@ def stage(request: Request, name: str, tree: str, wanted: str) -> tuple[str, Sta
         held = run.stages.get(name)
         if held is None or held.status not in report.reuse_statuses(name) or run.tree != tree:
             continue
-        if held.status == "failed" and run.status != "failed":
+        if held.status == "failed" and not report.lends_failure(held, run):
             continue
         if recorded(source, name) != wanted:
             continue
