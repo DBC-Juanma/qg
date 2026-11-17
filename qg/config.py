@@ -153,7 +153,7 @@ class Resources:
     """systemd limits: the executor's own scope and one scope per lane of work.
 
     The lanes run side by side, so their limits together are the machine budget of a run
-    (defaults: 20 cores and 16 GB across the executor, static, tests, qa_stack and qa_agent).
+    (defaults: 20 cores and 21 GB across the executor, static, tests, qa_stack and qa_agent).
     """
 
     cpu_quota: str
