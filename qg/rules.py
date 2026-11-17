@@ -332,7 +332,7 @@ def docstring_lines(text: str, name: str) -> set[int]:
     """Returns the lines of the module, class and function docstrings of `text` longer than one."""
     try:
         tree = ast.parse(text)
-    except (SyntaxError, ValueError) as exc:
+    except (SyntaxError, ValueError, RecursionError) as exc:
         die(f"{name} cannot be parsed: {exc}")
     lines: set[int] = set()
     for node in ast.walk(tree):
