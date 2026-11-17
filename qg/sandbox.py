@@ -523,6 +523,48 @@ def containers(run_id: str) -> list[str]:
     return listing.stdout.split()
 
 
+def services_unit(run_id: str) -> str:
+    """Returns the name of the transient unit that holds the run's `services` up."""
+    return f"qg-{run_id}-services.service"
+
+
+def hold_services(run_id: str, units: tuple[str, ...]) -> None:
+    """Starts `units` for the run and holds them until `release_services`; a second call is a no-op.
+
+    A transient unit of the run Requires and is ordered After each unit, so `systemd-run` returns
+    once they are started (and ready, when they wait for it in ExecStartPost). Units with
+    StopWhenUnneeded=yes stop when the last run holding them releases them.
+    """
+    holder = services_unit(run_id)
+    if (
+        not units
+        or proc.run(["systemctl", "--user", "is-active", holder]).stdout.strip() == "active"
+    ):
+        return
+    needs = [f"--property={kind}={unit}" for unit in units for kind in ("Requires", "After")]
+    started = proc.run(
+        [
+            "systemd-run",
+            "--user",
+            "--quiet",
+            "--collect",
+            "--remain-after-exit",
+            f"--unit={holder}",
+            *needs,
+            "true",
+        ],
+        timeout=SLOW_TIMEOUT,
+    )
+    if started.returncode != 0:
+        why = started.stderr.strip() or started.stdout.strip()
+        raise proc.Infrastructure(f"services {', '.join(units)} did not start: {why}")
+
+
+def release_services(run_id: str) -> None:
+    """Stops the run's hold on its services; absent is fine."""
+    proc.run(["systemctl", "--user", "stop", services_unit(run_id)])
+
+
 def teardown(run_id: str, repo: str) -> bool:
     """Stops stacks, runs teardown commands, removes containers and the run's own worktree.
 
@@ -530,6 +572,7 @@ def teardown(run_id: str, repo: str) -> bool:
     """
     stack.stop_all()
     run_teardown_commands(run_id)
+    release_services(run_id)
     src = paths.src_dir(run_id)
     found = containers(run_id)
     if found:

@@ -37,6 +37,7 @@ HUNT_RERUNS = 3
 HUNT_RERUN_MINUTES = 10
 QA_BOOT_MINUTES_CAP = 13
 TIMEOUT_KEYS = (*STAGES, "setup", "teardown")
+SERVICE_UNIT = re.compile(r"[A-Za-z0-9:_.@-]+\.service")
 DEFAULT_TIMEOUTS = {
     "simplify": 30,
     "static": 5,
@@ -336,6 +337,7 @@ class Config:
     qa: Qa | None
     deploy: dict[str, Policy]
     teardown: tuple[str, ...] = ()
+    services: tuple[str, ...] = ()
     simplify: Simplify = Simplify()
     affected: Affected = Affected()
     typical_minutes: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_TYPICAL_MINUTES))
@@ -818,6 +820,15 @@ def stored_policy(raw: Any, env: str, source: str) -> Policy:
     return _policy(reader, env, deploy[env])
 
 
+def _services(reader: Reader, raw: Any) -> tuple[str, ...]:
+    """Checks `services`: names of systemd user units (`<name>.service`) the app stacks need."""
+    units = reader.texts(raw, "services")
+    for index, unit in enumerate(units):
+        if not SERVICE_UNIT.fullmatch(unit):
+            reader.fail(f"services[{index}]", "expected a systemd user unit name like name.service")
+    return units
+
+
 def parse(raw: Any, source: str) -> Config:
     """Validates a loaded verify.yml and returns its Config; `source` names it in errors."""
     reader = Reader(source)
@@ -829,6 +840,7 @@ def parse(raw: Any, source: str) -> Config:
             "resources",
             "timeouts_minutes",
             "teardown",
+            "services",
             "affected",
             "typical_minutes",
             "probe",
@@ -928,6 +940,7 @@ def parse(raw: Any, source: str) -> Config:
         qa=qa,
         deploy=deploy,
         teardown=reader.texts(top.get("teardown", []), "teardown"),
+        services=_services(reader, top.get("services", [])),
         simplify=simplify,
         affected=affected,
         typical_minutes=typical,

@@ -262,6 +262,7 @@ def _qa_stage(ctx: Ctx) -> None:
             _end_reused(ctx.run_id, "qa", found[0], found[1], wanted)
             return
     admission.wait_for_memory(ctx.run_id, "qa", _limit(ctx, "qa"))
+    sandbox.hold_services(ctx.run_id, ctx.cfg.services)
     _begin(ctx.run_id, "qa")
     outcome = qa.run_qa(ctx.box.for_qa(), ctx.cfg, ctx.request)
     probed = probe.probe_pass(ctx.box, ctx.cfg, plan)
@@ -300,6 +301,7 @@ def _command_stage(ctx: Ctx, name: str) -> None:
         return
     admission.wait_for_memory(ctx.run_id, name, _limit(ctx, name))
     if name == "playwright":
+        sandbox.hold_services(ctx.run_id, cfg.services)
         with admission.playwright_turn(ctx.run_id):
             _run_command_stage(ctx, name, selection, wanted)
     else:

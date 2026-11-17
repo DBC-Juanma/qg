@@ -296,6 +296,7 @@ rules:                           # optional: architecture rules in the static st
   markdown_allow: ["docs/**"]
   disable: []
 teardown: ["<cmd>", ...]
+services: ["<unit>.service", ...]  # optional: systemd user units the app stacks need (see Services)
 deploy:
   prod: {stages: [static, backend, frontend, playwright, qa], max_p0: 0, p1_acknowledged: true}
   staging: {stages: [static, backend, frontend, playwright]}
@@ -308,7 +309,7 @@ Required: `version` (must be 1), `deps.python_sync`, `postgres.image` and `.db`,
 
 Defaults: `resources` 100% and 1G for the executor and the lane limits above, `timeouts_minutes` as above plus two optional keys, `setup` (30 minutes per
 sandbox step) and `teardown` (5 minutes per teardown command), `deploy.<env>.max_p0` 0, `p1_acknowledged` false,
-`qa.time_limit_minutes` 15, `qa.max_turns` 150, `qa.max_cost_usd` 15 (a number > 0; `secrets_keys` needs `secrets_env_file`), `playwright.critical` empty, `teardown` empty. Every stage a deploy
+`qa.time_limit_minutes` 15, `qa.max_turns` 150, `qa.max_cost_usd` 15 (a number > 0; `secrets_keys` needs `secrets_env_file`), `playwright.critical` empty, `teardown` empty, `services` empty. Every stage a deploy
 policy lists must be configured under `stages`. A stage list may be empty (the stage passes with `no commands`).
 `{specs}` must appear in `playwright.run`.
 
@@ -358,6 +359,13 @@ and model keys are never inherited; plus `UV_PROJECT_ENVIRONMENT` (the cached ve
   stopped and **before the Postgres container is removed**, so a command can still read the run's database (for
   example to drop the run's vector-store collections). Their output is `runs/<id>/logs/teardown.log`. A failing or
   timed-out teardown command is logged and never fails the run; they run only while the run's container exists.
+- `services` are the systemd user units the app stacks need and nothing else keeps running (a shared vector store, a
+  model server). qg starts what it uses and stops it when done: just before the Playwright or QA stage runs (never
+  for a reused stage), the run starts a transient unit `qg-<id>-services.service` that `Requires` and is ordered
+  `After` each listed unit, and waits for it (a unit that waits for its own readiness in `ExecStartPost` is ready
+  when the stage starts). A unit that does not start ends the run `error`. Teardown stops the transient unit after
+  the teardown commands, so the units must declare `StopWhenUnneeded=yes`: they stop when the last run holding them
+  releases them, and keep running while another run still holds them. Nothing in `services` is enabled at boot.
 
 ## The deployed record, the base and the plan
 
